@@ -3,6 +3,8 @@ import pandas as pd
 import statsmodels.api as sm
 
 
+
+
 def hedge(df2, df1):
     """
     Calcola hedge ratio e intercetta via OLS su log prices.
