@@ -2,10 +2,15 @@ import numpy as np
 import statsmodels.tsa.stattools as stat
 import pandas as pd
 import json
+from pathlib import Path
 
-df = pd.read_csv("../data/csv/xle_basket.csv", header=[0,1], index_col=0)
+# Get the directory where this script is located
+SCRIPT_DIR = Path(__file__).parent
+DATA_DIR = SCRIPT_DIR.parent / "data"
 
-with open("../data/ticker.json", 'r', encoding='utf-8') as file:
+df = pd.read_csv(DATA_DIR / "csv" / "xle_basket.csv", header=[0,1], index_col=0)
+
+with open(DATA_DIR / "ticker.json", 'r', encoding='utf-8') as file:
     tickers = json.load(file)
 
 screening_couples = []
