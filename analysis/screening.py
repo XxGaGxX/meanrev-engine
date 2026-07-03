@@ -41,6 +41,7 @@ for ticker1 in tickers:
                 "crit_values": ticker_coint[2],
             }
             screening_couples.append(new_element)
+ 
 
 print(screening_couples)
 
