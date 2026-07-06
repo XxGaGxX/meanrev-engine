@@ -1,0 +1,9 @@
+alpaca-py==0.43.5
+backtrader==1.9.78.123
+matplotlib==3.11.0
+matplotlib-inline==0.2.2
+numpy==2.2.4
+pandas==3.0.3
+python-dotenv==1.2.2
+PyYAML==6.0.3
+vectorbt==1.1.0

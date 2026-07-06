@@ -1,0 +1,132 @@
+# Mean Reversion Intraday — Configuration
+# Centralized parameters for the entire strategy pipeline
+
+# ───────────────────────────────────────────────
+# ASSET UNIVERSE
+# ───────────────────────────────────────────────
+universe:
+  symbols:
+    - SPY
+    - QQQ
+    - IWM
+  asset_class: us_equity
+
+# ───────────────────────────────────────────────
+# TIMEFRAME
+# ───────────────────────────────────────────────
+timeframe:
+  primary: "15Min"      # Primary timeframe for signals
+  secondary: "5Min"     # Optional secondary timeframe for comparison
+  market_open: "09:30"  # US market open (EST)
+  market_close: "16:00" # US market close (EST)
+  skip_first_minutes: 30  # Skip first N minutes after open
+  skip_last_minutes: 30   # Skip last N minutes before close
+
+# ───────────────────────────────────────────────
+# DATA FETCH
+# ───────────────────────────────────────────────
+data:
+  historical_start: "2022-01-01"
+  historical_end: null             # null = fetch up to yesterday
+  feed: alpaca
+  paper_trading: true
+
+# ───────────────────────────────────────────────
+# INDICATORS
+# ───────────────────────────────────────────────
+indicators:
+  adx:
+    period: 14
+  hurst:
+    window: 252
+    min_lag: 2
+    max_lag: 100
+  rsi:
+    period: 14
+    oversold: 30
+    overbought: 70
+  bollinger:
+    period: 20
+    std_dev: 2
+  zscore:
+    window: 20
+  volume:
+    window: 20
+    multiplier: 1.5
+  atr:
+    period: 14
+
+# ───────────────────────────────────────────────
+# REGIME FILTER (Level 1)
+# ───────────────────────────────────────────────
+regime_filter:
+  adx_threshold: 22
+  hurst_threshold: 0.45
+  atr_relative_std_threshold: 2.0  # Exclude if ATR% > 2 std from mean
+  min_regime_coverage_pct: 20      # Min % of time regime_ok=True
+  max_regime_coverage_pct: 70      # Max % of time regime_ok=True
+
+# ───────────────────────────────────────────────
+# ENTRY SIGNAL (Level 2)
+# ───────────────────────────────────────────────
+entry_signal:
+  z_threshold: 2.0
+  use_volume_confirm: true
+  use_price_action: false          # Optional: pin bar / hammer confirmation
+  min_signals_per_asset: 30        # Min signals for statistical validity
+
+# ───────────────────────────────────────────────
+# EXIT MANAGEMENT (Level 3)
+# ───────────────────────────────────────────────
+exit:
+  atr_multiplier: 1.5
+  max_bars: 25                     # Time stop after N bars
+  adx_stop_threshold: 25           # Regime stop if ADX crosses above
+
+# ───────────────────────────────────────────────
+# ACCOUNT
+# ───────────────────────────────────────────────
+account:
+  equity: 10000                    # Starting equity for backtest / paper / live
+
+# ───────────────────────────────────────────────
+# RISK MANAGEMENT
+# ───────────────────────────────────────────────
+risk:
+  risk_per_trade_pct: 1.0          # Risk per trade (1%)
+  max_risk_per_trade_pct: 2.0      # Hard cap
+  max_open_positions: 3            # Max simultaneous positions
+  kelly_fraction: 0.25             # 1/4 Kelly for scaling
+
+# ───────────────────────────────────────────────
+# BACKTEST
+# ───────────────────────────────────────────────
+backtest:
+  commission_per_side: 0.0        # Alpaca: $0 commission on US equities
+  slippage_pct: 0.0005            # 0.05% slippage (conservative estimate)
+
+# ───────────────────────────────────────────────
+# WALK-FORWARD ANALYSIS
+# ───────────────────────────────────────────────
+walk_forward:
+  train_months: 6
+  test_months: 1
+  min_windows: 4
+  oos_degradation_tolerance: 0.20   # Metrics can degrade max 20%
+
+# ───────────────────────────────────────────────
+# MONTE CARLO
+# ───────────────────────────────────────────────
+monte_carlo:
+  n_simulations: 10000
+  confidence_levels: [5, 50, 95]
+
+# ───────────────────────────────────────────────
+# PAPER / LIVE TRADING
+# ───────────────────────────────────────────────
+live:
+  paper_duration_weeks: 6
+  min_paper_trades: 50
+  live_size_reduction: 0.50       # Trade at 50% size for first weeks
+  live_scaling_weeks: 4
+  weekly_metric_review: true

@@ -1,1 +1,63 @@
-.venv
+# ─── Virtual environments ──────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ─── Secrets & local config ───────────────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ─── Python build & cache artifacts ────────────────────────────
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+
+# Test / coverage caches
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.tox/
+
+# ─── Local data & script outputs ──────────────────────────────
+scripts/output/
+*.log
+*.csv
+*.parquet
+*.feather
+*.h5
+*.pkl
+*.pickle
+*.bak
+*.orig
+*.rej
+*.tmp
+*.swp
+*.swo
+
+# ─── IDE & OS noise ───────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ─── Jupyter / notebooks (uncomment if you add any) ───────────
+# .ipynb_checkpoints/
+
+# ─── Alpaca / broker SDK caches (if any) ──────────────────────
+alpaca_sdk_cache/
