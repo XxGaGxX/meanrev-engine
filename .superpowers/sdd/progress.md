@@ -20,12 +20,22 @@
   - `config.yaml::monte_carlo.*` (10k sims / percentili 5/50/95) pre-configurato
 
 **Sub-task tracking:**
-  - 1.1 — historical_test.py regime check (2022 Q1-Q3 bear + 2023 Q2-Q3 range): pending
-  - 1.2 — `risk/portfolio.py` con `compute_unrealized_pnl` (no-touch su `risk/sizing.py`): pending
-  - 1.3 — `run_portfolio_backtest` + `PortfolioResult` con MTM equity + FIFO selection: pending
-  - 1.4 — `scripts/run_portfolio_12mo.py` E2E smoke + log: pending
-  - Tests — 5 nuovi (cap-3, shared equity, empty skip, skip_reasons, MTM current price): pending
-  - Code review — `code-reviewer-minimax-m3` su Sprint 1: pending
+  - 1.1 — regime check: DONE — 2022-Q1Q3 produced 8 trades (all losing, PF=0.0, Sharpe=−1.98), 2023-Q2Q3 produced 0 trades; Strategy structurally unviable across all 5 tested historical regimes; see PATH_2_VALIDATION_INFRASTRUCTURE_PLAN §15
+  - 1.2 — `risk/portfolio.py` con `compute_unrealized_pnl` (no-touch su `risk/sizing.py`): BLOCKED — pending user decision on PATH 2 continuation vs pivot (options A/B/C in followups)
+  - 1.3 — `run_portfolio_backtest` + `PortfolioResult` con MTM equity + FIFO selection: BLOCKED (idem)
+  - 1.4 — `scripts/run_portfolio_12mo.py` E2E smoke + log: BLOCKED (idem)
+  - Tests — 5 nuovi (cap-3, shared equity, empty skip, skip_reasons, MTM current price): BLOCKED (idem)
+  - Code review — `code-reviewer-minimax-m3` su Sprint 1: BLOCKED (idem)
+
+**Aggregate finding (after Sprint 1.1):**
+
+La strategia mean-reversion intraday su SPY/QQQ/IWM ha prodotto:
+- 0-24 trade in 5 finestre storiche testate (Q4 2025, cross-val Q4 2023→2024, Step 1.6, bear 2022, range 2023)
+- regime_ok pass rate 6-9% in tutti i window (config min=8%)
+- PF<1.0 dove i trade hanno generato abbastanza dati per calcolarlo
+- Sharpe negativo o undefined
+
+→ Conferma quantitativa che la strategia ha un problema strutturale, non parametrico. PATH 2 prosegue validando l'infrastruttura; Cancellation Gate (§7 PATH_2 plan) atteso FAIL.
 
 ---
 

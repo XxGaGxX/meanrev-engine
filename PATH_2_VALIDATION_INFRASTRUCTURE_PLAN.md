@@ -343,4 +343,52 @@ Le 4 decisioni di design sono state risolte dall'utente prima dell'esecuzione (b
 
 ---
 
+## 15. Update Sprint 1.1 — Regime Check (2026-07-07)
+
+**Comando eseguito sul branch `feature/path-2-validation-infra` (commit `2fb0a25`):**
+
+```
+python scripts/historical_test.py SPY 2022-01-01 2022-09-30  # bear market
+python scripts/historical_test.py SPY 2023-04-01 2023-09-30  # range-bound
+```
+
+**Risultati:**
+
+| Window | Tipo regime | Barre | regime_ok% | Trades | PF | Sharpe | Verdict |
+|---|---|---|---|---|---|---|---|
+| 2022 Q1-Q3 | bear | 4.301 | 7.2% | **8** | 0.0000 | −1.9798 | ❌ tutti losing |
+| 2023 Q2-Q3 | range | 2.875 | 6.3% | **0** | undef | N/A | ❌ nessun trade |
+
+Aggiungendo questi ai risultati già noti:
+
+| Window | Trades | PF | Sorgente |
+|---|---|---|---|
+| 2024-10 → 2025-09 (Sprint 1) | 24 | 0.40 | BACKTEST_REMEDIATION_PLAN §2 |
+| 2023-10 → 2024-09 (cross-val) | 0 | undef | BACKTEST_REMEDIATION_PLAN §2 |
+| 2024-10 → 2025-09 (Step 1.6) | 11 | 0.013 | BACKTEST_REMEDIATION_PLAN §2 |
+| 2022 Q1-Q3 (bear) | 8 | 0.0000 | PATH 2 §15 |
+| 2023 Q2-Q3 (range) | 0 | undef | PATH 2 §15 |
+
+→ **La strategia mean-reversion ha mostrato 0-24 trade in 5 di 5 finestre storiche testate**, con PF<1.0 in ogni finestra che ha prodotto ≥1 trade. regime_ok pass rate è 6-9% in tutti i window.
+
+**Implicazione architetturale:**
+
+Il piano prevedeva (Sprint 1 §1 "Contingency") che se N<50 in entrambi i window 2022/2023, l'infrastruttura Sprint 1-3 venga testata con **mock DataFrame** (generati da una distribuzione nota di trade logs, oppure carry-trade su portafoglio sintetico). Questa contingency si applica: Sprint 1.2-1.4 può procedere con mock data.
+
+**Implicazione strategica (sull'esito atteso del Cancellation Gate):**
+
+Il Cancellation Gate (§7) richiede Sharpe OOS > 0 E MC percentile 5 ≥ −25% E `low_confidence=False` su almeno 2 di 3 finestre storiche. Data la scarsità cronica di trade (<50 per finestra storica), WFA produrrà sempre `low_confidence=True` per la strategia mean-reversion corrente. → **Il gate è strutturalmente destinato a FAIL** per la strategia corrente.
+
+Questo non è un fallimento di PATH 2 ma una **conferma quantitativa** della diagnosi in `analysis/strategy-fit.md` §1: la strategia non ha edge misurabile in nessuna finestra storica.
+
+**Implicazione su PATH 2 ROI:**
+
+L'infrastruttura costruita (Portfolio + WFA + MC) rimane **strategy-agnostic e riutilizzabile integralmente** per la prossima famiglia di strategie. PATH 2 è un investimento sulla capacità di validazione, non sulla strategia attuale.
+
+**Decisione pendente per utente (sospesa fino a risposta):**
+
+Procedere con Sprint 1.2-1.4 (mock DataFrame, infrastructure-only) o pivotare anticipatamente a una nuova famiglia di strategie (momentum / breakout / pairs su universo espanso)? Le tre opzioni operative sono documentate nei followup di sessione.
+
+---
+
 *Questo piano è operativo per i prossimi 3 sprint. Si aggiorna con i risultati del Cancellation Gate al termine di Sprint 3 e le decisioni di pivot se necessario.*
