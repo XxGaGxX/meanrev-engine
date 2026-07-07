@@ -106,3 +106,50 @@ class TestCalculateAllMetrics:
         assert "sortino_ratio" in metrics
         # Sharpe should be computed from equity pct_change, not trade returns
         assert not np.isnan(metrics["sharpe_ratio"])
+
+    def test_backward_compat_without_mtm(self):
+        """equity_mtm=None must preserve existing behavior."""
+        trade_returns = pd.Series([0.01, -0.005, 0.02])
+        equity = pd.Series([10000, 10100, 10050, 10251])
+        metrics = calculate_all_metrics(
+            trade_returns, equity, periods_per_year=252, equity_mtm=None,
+        )
+        assert "sharpe_ratio" in metrics
+        assert "max_drawdown" in metrics
+        # Total return computed from equity (not MTM)
+        assert metrics["total_return"] == pytest.approx(
+            equity.iloc[-1] / equity.iloc[0] - 1, rel=1e-9,
+        )
+
+    def test_with_mtm_changes_sharpe_sortino(self):
+        """Providing equity_mtm must produce different (more realistic) Sharpe."""
+        trade_returns = pd.Series([0.03, -0.01, 0.02])
+        # Sparse equity: only 4 points (3 trade exits)
+        equity = pd.Series([10000, 10300, 10197, 10401])
+        # Dense MTM: 10 bars showing intra-trade drawdown
+        equity_mtm = pd.Series([
+            10000, 10050, 9500, 10000, 10300,  # massive drawdown mid-trade
+            10200, 10197, 10100, 10300, 10401,
+        ])
+
+        metrics_no_mtm = calculate_all_metrics(
+            trade_returns, equity, periods_per_year=252, equity_mtm=None,
+        )
+        metrics_with_mtm = calculate_all_metrics(
+            trade_returns, equity, periods_per_year=252, equity_mtm=equity_mtm,
+        )
+        # MTM curve captures intra-trade drawdown → lower Sharpe
+        assert metrics_with_mtm["sharpe_ratio"] < metrics_no_mtm["sharpe_ratio"]
+        # MTM drawdown includes intra-trade decline
+        assert metrics_with_mtm["max_drawdown"] < metrics_no_mtm["max_drawdown"]
+
+    def test_no_trades_omits_sharpe_even_with_mtm(self):
+        """With zero trades, Sharpe/Sortino must be omitted even if MTM present."""
+        trade_returns = pd.Series(dtype=float)  # empty
+        equity = pd.Series([10000.0])
+        equity_mtm = pd.Series([10000.0] * 10)  # flat MTM, but no trades
+        metrics = calculate_all_metrics(
+            trade_returns, equity, periods_per_year=252, equity_mtm=equity_mtm,
+        )
+        assert "sharpe_ratio" not in metrics
+        assert "sortino_ratio" not in metrics

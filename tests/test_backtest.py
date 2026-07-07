@@ -119,7 +119,7 @@ class TestPipelineComposition:
         df = _make_synthetic_ohlcv(n_bars=300)
         result = run_backtest(df)
         for col in (
-            "adx", "hurst", "rsi", "bb_upper", "bb_lower",
+            "adx", "hurst", "hurst_fast", "rsi", "bb_upper", "bb_lower",
             "zscore", "vol_confirm", "atr", "regime_ok",
             "signal_long", "signal_short",
         ):
@@ -534,6 +534,13 @@ class TestDefaultCfg:
         whitelisted = {
             "adx_threshold", "hurst_threshold",
             "atr_relative_std_threshold", "atr_window",
+            "use_fast_hurst",
+            "soft_scoring",
+            "score_adx_weight", "score_hurst_weight", "score_atr_weight",
+            "score_threshold",
+            "adaptive_hurst",
+            "adaptive_strong_trend_h", "adaptive_tight_threshold",
+            "adaptive_range_h", "adaptive_relax_threshold",
         }
         non_engine_keys = set(yaml_regime.keys()) - whitelisted
         if non_engine_keys:

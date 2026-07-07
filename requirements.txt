@@ -6,4 +6,5 @@ numpy==2.2.4
 pandas==3.0.3
 python-dotenv==1.2.2
 PyYAML==6.0.3
+TA-Lib==0.7.0          # added 2026-07-07: bundled C-library wheel for cp314 win_amd64; was missing despite FIX_PLAN Sprint 2 M1 marking it ✅
 vectorbt==1.1.0

@@ -9,6 +9,7 @@ import pytest
 from risk.sizing import (
     apply_position_sizing,
     build_equity_curve,
+    build_mtm_equity_curve,
     build_pct_curve,
     calculate_shares,
     kelly_risk_pct,
@@ -644,3 +645,145 @@ class TestBuildPctCurve:
         assert pd.isna(ec_from_trades.index[0])
         assert pd.isna(ec.index[0])
         assert float(ec_from_trades.iloc[0]) == float(ec.iloc[0])
+
+
+# ==========================================================================
+# build_mtm_equity_curve — per-bar mark-to-market curve (FIX_PLAN_v2 Step 1)
+# ==========================================================================
+
+class TestMtmEquityCurve:
+    def test_mtm_flat_when_no_trades(self):
+        """Without trades, the MTM curve is flat at initial_equity."""
+        df = _make_sized_df(n=50)
+        empty = pd.DataFrame(columns=[
+            "entry_idx", "exit_idx", "entry_price", "exit_price",
+            "direction", "pnl_pct",
+        ])
+        mtm = build_mtm_equity_curve(empty, df, initial_equity=10_000.0)
+        assert len(mtm) == len(df)
+        assert (mtm.values == 10_000.0).all()
+
+    def test_mtm_ramps_up_during_open_trade(self):
+        """During a winning long trade, equity MTM rises with close."""
+        n = 50
+        df = _make_sized_df(n=n, atr=1.0, price=100.0)
+        df["close"] = np.linspace(100, 120, n)  # steady uptrend
+
+        trades = _make_synthetic_trade_log(
+            n=1, entry_idxs=[10], exit_idxs=[30],
+            entry_prices=[100.0], exit_prices=[120.0],
+            directions=[1], pnl_pcts=[0.20],
+        )
+        sized = apply_position_sizing(
+            trades, df, initial_equity=10_000.0,
+            risk_cfg={"risk_per_trade_pct": 1.0, "kelly_fraction": 0.0},
+        )
+        mtm = build_mtm_equity_curve(sized, df, initial_equity=10_000.0)
+        # Before entry: flat at 10k
+        assert mtm.iloc[0] == 10_000.0
+        assert mtm.iloc[9] == 10_000.0
+        # During trade (bars 11-29): rising with close
+        assert mtm.iloc[10] > 10_000.0
+        assert mtm.iloc[29] > mtm.iloc[10]
+        # After exit: equals equity_after
+        assert mtm.iloc[31] == pytest.approx(float(sized["equity_after"].iloc[0]), rel=1e-9)
+
+    def test_mtm_snaps_to_cash_on_exit(self):
+        """After exit, equity_mtm[-1] equals equity_after of last trade."""
+        n = 100
+        df = _make_sized_df(n=n, atr=1.0, price=100.0)
+        df["close"] = np.linspace(100, 110, n)
+
+        trades = _make_synthetic_trade_log(
+            n=2,
+            entry_idxs=[10, 50],
+            exit_idxs=[30, 70],
+            entry_prices=[100.0, 105.0],
+            exit_prices=[105.0, 110.0],
+            directions=[1, 1],
+            pnl_pcts=[0.05, 0.05 / 1.05],
+        )
+        sized = apply_position_sizing(
+            trades, df, initial_equity=10_000.0,
+            risk_cfg={"risk_per_trade_pct": 1.0, "kelly_fraction": 0.0},
+        )
+        mtm = build_mtm_equity_curve(sized, df, initial_equity=10_000.0)
+        # Last MTM value must equal last trade's equity_after
+        assert mtm.iloc[-1] == pytest.approx(
+            float(sized["equity_after"].iloc[-1]), rel=1e-9
+        )
+
+    def test_mtm_handles_overlapping_trades(self):
+        """Two overlapping trades: MTM sums unrealized PnL of both."""
+        n = 80
+        df = _make_sized_df(n=n, atr=1.0, price=100.0)
+        df["close"] = np.linspace(100, 120, n)
+
+        # Trade 1: bars 10-50, long. Trade 2: bars 30-70, long.
+        # Overlap period: bars 30-50.
+        trades = pd.DataFrame({
+            "entry_idx": [10, 30],
+            "exit_idx": [50, 70],
+            "entry_price": [100.0, 110.0],
+            "exit_price": [110.0, 120.0],
+            "direction": [1, 1],
+            "pnl_pct": [0.10, 0.10 / 1.10],
+            "bars_held": [40, 40],
+            "exit_reason": ["tp", "tp"],
+            "shares": [66.67, 60.0],
+            "equity_after": [10_666.67, 11_266.67],
+        })
+        mtm = build_mtm_equity_curve(trades, df, initial_equity=10_000.0)
+        # Before any trade: flat
+        assert mtm.iloc[9] == 10_000.0
+        # During overlap (bar 31): both positions contribute.
+        # Verify the MTM value equals the sum of both positions' unrealized PnL.
+        mid_val = mtm.iloc[31]
+        t1_unrealized = 66.67 * (df["close"].iloc[31] - 100.0)
+        t2_unrealized = 60.0 * (df["close"].iloc[31] - 110.0)
+        expected_val = 10_000.0 + t1_unrealized + t2_unrealized
+        assert mid_val == pytest.approx(expected_val, rel=1e-5)
+
+    def test_mtm_entry_exit_same_bar(self):
+        """Trade that opens and closes on the same bar index."""
+        # This shouldn't happen with realistic fill, but test the edge case.
+        n = 30
+        df = _make_sized_df(n=n, atr=1.0, price=100.0)
+        df["close"] = 100.0
+
+        trades = pd.DataFrame({
+            "entry_idx": [5],
+            "exit_idx": [5],
+            "entry_price": [100.0],
+            "exit_price": [100.0],
+            "direction": [1],
+            "pnl_pct": [0.0],
+            "bars_held": [0],
+            "exit_reason": ["end_of_data"],
+            "shares": [0.0],
+            "equity_after": [10_000.0],
+        })
+        mtm = build_mtm_equity_curve(trades, df, initial_equity=10_000.0)
+        # Must not crash; exit processing runs before entry on same bar
+        assert len(mtm) == n
+        assert mtm.iloc[6] == 10_000.0
+
+    def test_mtm_is_bar_aligned(self):
+        """len(equity_mtm) == len(df) and same index."""
+        df = _make_sized_df(n=100)
+        df["close"] = 100.0
+        trades = _make_synthetic_trade_log(n=3)
+        sized = apply_position_sizing(
+            trades, df, initial_equity=10_000.0,
+            risk_cfg={"risk_per_trade_pct": 1.0, "kelly_fraction": 0.0},
+        )
+        mtm = build_mtm_equity_curve(sized, df, initial_equity=10_000.0)
+        assert len(mtm) == len(df)
+        assert (mtm.index == df.index).all()
+
+    def test_mtm_none_trades_returns_flat_series(self):
+        """trades=None must short-circuit to flat curve."""
+        df = _make_sized_df(n=50)
+        mtm = build_mtm_equity_curve(None, df, initial_equity=10_000.0)
+        assert len(mtm) == len(df)
+        assert (mtm.values == 10_000.0).all()

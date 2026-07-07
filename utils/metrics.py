@@ -145,24 +145,30 @@ def calculate_all_metrics(
     trade_returns: pd.Series,
     equity: pd.Series,
     periods_per_year: Optional[int] = None,
+    equity_mtm: Optional[pd.Series] = None,
 ) -> Dict[str, Any]:
     """
     Compute the full metrics suite from a trade log.
 
     Trade-level metrics (win rate, profit factor, expectancy) are always computed.
-    Time-series metrics (Sharpe, Sortino) require `periods_per_year` to be set
-    and assume `trade_returns` are actually periodic returns (e.g., daily equity
-    changes). For per-trade returns, leave `periods_per_year` as None.
+    Time-series metrics (Sharpe, Sortino) require `periods_per_year` to be set.
+    When `equity_mtm` (per-bar mark-to-market curve) is provided, it is used
+    for Sharpe/Sortino and drawdown; otherwise the trade-exit `equity` curve is
+    used for backward compatibility.
 
     Parameters
     ----------
     trade_returns : pd.Series
         Per-trade or periodic returns (as fractions, e.g., 0.01 = 1%).
     equity : pd.Series
-        Equity curve (cumulative value over time).
+        Equity curve (cumulative value over time, trade-exit points).
     periods_per_year : int, optional
         Number of periods per year. Required for Sharpe/Sortino.
         Examples: 252 (daily), ~5500 (15-min bars).
+    equity_mtm : pd.Series, optional
+        Per-bar mark-to-market equity curve. When provided, Sharpe/Sortino
+        and max_drawdown are computed from this curve, capturing intra-trade
+        drawdown and realistic periodic returns.
 
     Returns
     -------
@@ -181,18 +187,30 @@ def calculate_all_metrics(
         "avg_win": wins.mean() if len(wins) > 0 else 0.0,
         "avg_loss": abs(losses.mean()) if len(losses) > 0 else 0.0,
         "expectancy": expectancy(trade_returns),
-        "max_drawdown": max_drawdown(equity),
-        "max_drawdown_bars": max_drawdown_bars(equity),
-        "total_return": equity.iloc[-1] / equity.iloc[0] - 1 if len(equity) > 1 else 0.0,
+        # max_drawdown, max_drawdown_bars, total_return are set below
+        # from curve_for_dd (MTM when available, else trade-exit equity).
     }
 
-    # Time-series metrics only if periodicity is known.
-    # Sharpe/Sortino require periodic returns (e.g., daily equity changes),
-    # not per-trade returns. We compute them from the equity curve.
-    if periods_per_year is not None and len(equity) > 1:
-        periodic_returns = equity.pct_change().dropna()
-        metrics["sharpe_ratio"] = sharpe_ratio(periodic_returns, periods_per_year=periods_per_year)
-        metrics["sortino_ratio"] = sortino_ratio(periodic_returns, periods_per_year=periods_per_year)
+    # Drawdown: prefer per-bar MTM curve when available (captures intra-trade
+    # drawdown), otherwise fall back to trade-exit equity curve.
+    curve_for_dd = equity_mtm if (equity_mtm is not None and len(equity_mtm) > 1) else equity
+    metrics["max_drawdown"] = max_drawdown(curve_for_dd)
+    metrics["max_drawdown_bars"] = max_drawdown_bars(curve_for_dd)
+    metrics["total_return"] = (
+        curve_for_dd.iloc[-1] / curve_for_dd.iloc[0] - 1
+        if len(curve_for_dd) > 1 else 0.0
+    )
+
+    # Time-series metrics (Sharpe/Sortino): prefer MTM curve when available,
+    # fall back to trade-exit equity curve for backward compatibility.
+    # Guard: only compute when trades actually occurred — a flat MTM curve
+    # with no P&L variation should not produce spurious Sharpe/Sortino.
+    curve_for_ts = equity_mtm if (equity_mtm is not None and len(equity_mtm) > 1) else equity
+    if periods_per_year is not None and len(curve_for_ts) > 1 and metrics["total_trades"] > 0:
+        periodic_returns = curve_for_ts.pct_change().dropna()
+        if len(periodic_returns) > 0 and periodic_returns.std() > 0:
+            metrics["sharpe_ratio"] = sharpe_ratio(periodic_returns, periods_per_year=periods_per_year)
+            metrics["sortino_ratio"] = sortino_ratio(periodic_returns, periods_per_year=periods_per_year)
 
     if metrics["avg_loss"] > 0:
         metrics["kelly_fraction"] = kelly_criterion(

@@ -34,6 +34,26 @@ def _hurst_single(ts: np.ndarray, min_lag: int = 2, max_lag: int = 100) -> float
     return poly[0] * 2.0
 
 
+def _add_hurst_col(
+    df: pd.DataFrame,
+    col_name: str,
+    window: int,
+    min_lag: int,
+    max_lag: int,
+) -> pd.DataFrame:
+    """Internal helper: add a rolling Hurst column with given window."""
+    missing = _REQUIRED_COLS - set(df.columns)
+    if missing:
+        raise ValueError(f"Hurst calculation missing required columns: {missing}")
+    df = df.copy()
+    df[col_name] = (
+        df["close"]
+        .rolling(window=window, min_periods=window)
+        .apply(lambda x: _hurst_single(x.values, min_lag, max_lag), raw=False)
+    )
+    return df
+
+
 def add_hurst(
     df: pd.DataFrame, window: int = 252, min_lag: int = 2, max_lag: int = 100
 ) -> pd.DataFrame:
@@ -56,13 +76,39 @@ def add_hurst(
     pd.DataFrame
         Copy of df with added 'hurst' column.
     """
-    missing = _REQUIRED_COLS - set(df.columns)
-    if missing:
-        raise ValueError(f"add_hurst missing required columns: {missing}")
-    df = df.copy()
-    df["hurst"] = (
-        df["close"]
-        .rolling(window=window, min_periods=window)
-        .apply(lambda x: _hurst_single(x.values, min_lag, max_lag), raw=False)
-    )
-    return df
+    return _add_hurst_col(df, "hurst", window, min_lag, max_lag)
+
+
+def add_hurst_fast(
+    df: pd.DataFrame,
+    window: int = 50,
+    min_lag: int = 2,
+    max_lag: int = 20,
+) -> pd.DataFrame:
+    """
+    Add a fast Hurst Exponent column for intraday micro-structure.
+
+    ``window=50`` (~2 trading days at 15-min bars) captures short-term
+    mean-reverting behaviour that the slow Hurst (window=252, ~9 days)
+    may miss inside a broader trending regime.
+
+    Use ``hurst_fast`` as the entry-gate filter; keep ``hurst`` as a
+    structural-regime diagnostic.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Must contain a 'close' column.
+    window : int
+        Rolling window size (default 50 ~ 2 trading days at 15-min bars).
+    min_lag : int
+        Minimum lag for the R/S calculation.
+    max_lag : int
+        Maximum lag for the R/S calculation (reduced for shorter window).
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy of df with added 'hurst_fast' column.
+    """
+    return _add_hurst_col(df, "hurst_fast", window, min_lag, max_lag)

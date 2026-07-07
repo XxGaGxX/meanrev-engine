@@ -55,18 +55,46 @@ def simulate_exit(
     """
     Simulate a single trade from entry to first exit trigger.
 
+    Realistic-fill contract (2026-07-07 — closes the look-ahead bias)
+    -----------------------------------------------------------------
+    The decision bar is ``entry_idx``. The fill bar is ``entry_idx + 1``
+    (T+1), because the strategy can only submit an order after the
+    close of the signal bar and the broker fills it on the next bar's
+    open — not at the trigger price itself.
+
+    1. **Entry fill** = ``df["open"].iloc[entry_idx + 1]``.
+       The trigger's close (``df["close"].iloc[entry_idx]``) is no
+       longer assumed to be the fill price. This removes the biased
+       assumption that we knew the signal-bar close at the moment of
+       entry.
+    2. **Stop-Loss (SL) gap fill** = when a post-trigger bar opens AT
+       OR BEYOND the SL, fill at that bar's OPEN (the SL could not be
+       honored because the market gapped through). Marked
+       ``exit_reason = "open_gap_sl"``.
+    3. **Intra-bar SL** = if the bar's ``low`` (long) or ``high``
+       (short) reaches the SL *inside* the bar, fill at SL.
+       Marked ``exit_reason = "sl"``.
+    4. **Take Profit (TP)** = unchanged. TP is anchored to the
+       close-based z-score reversion (computed on
+       ``df["close"].iloc[bar]``); TP does not gap-fill because the
+       trigger is a computed indicator on close, not a fixed price
+       level.
+    5. **End-of-data / NaN / regime / time** = same as before.
+
     Parameters
     ----------
     df : pd.DataFrame
-        DataFrame with OHLCV + indicator columns.
+        DataFrame with OHLCV + indicator columns. MUST include
+        ``open`` for the realistic-fill contract.
     entry_idx : int
-        Integer position of the entry bar in df.
+        Integer position of the SIGNAL bar (T) in df. Fill happens
+        at T+1 (``entry_idx + 1``).
     direction : int
         1 for long, -1 for short.
     atr_multiplier : float
-        Stop-loss distance as multiple of ATR at entry.
+        Stop-loss distance as multiple of ATR at the SIGNAL bar (T).
     max_bars : int
-        Maximum bars to hold the position (time stop).
+        Maximum bars from signal bar to hold the position (time stop).
     adx_stop_threshold : float
         ADX level that triggers regime stop exit.
 
@@ -74,24 +102,32 @@ def simulate_exit(
     -------
     dict
         {
-            "entry_idx": int,
-            "exit_idx": int,
-            "entry_price": float,
+            "entry_idx": int,    # signal bar (T)
+            "exit_idx": int,     # bar where the trigger fired (>= T+1)
+            "entry_price": float,# fill price = T+1 open (the realistic fill)
             "exit_price": float,
             "direction": int,
             "pnl_pct": float,
             "bars_held": int,
-            "exit_reason": str,  # "tp", "sl", "time", "regime", "end_of_data"
+            "exit_reason": str,  # "tp", "sl", "open_gap_sl",
+                                 # "time", "regime", "end_of_data", "nan_data"
         }
 
     Raises
     ------
     ValueError
-        If entry_idx is out of bounds or required columns are missing.
+        If ``entry_idx`` is out of bounds, the required columns are
+        missing (including ``open``), ``direction`` is not 1/-1, or
+        the signal-bar ATR is non-positive / non-finite.
     """
     missing = _REQUIRED_COLS - set(df.columns)
     if missing:
         raise ValueError(f"simulate_exit missing required columns: {missing}")
+    if "open" not in df.columns:
+        raise ValueError(
+            "simulate_exit requires an 'open' column for the realistic-fill "
+            "contract (T+1 open entry). Re-add 'open' to the indicator pipeline."
+        )
 
     if entry_idx < 0 or entry_idx >= len(df):
         raise ValueError(f"entry_idx {entry_idx} out of bounds (0-{len(df)-1})")
@@ -99,19 +135,50 @@ def simulate_exit(
     if direction not in (1, -1):
         raise ValueError(f"direction must be 1 (long) or -1 (short), got {direction}")
 
-    entry_price = float(df["close"].iloc[entry_idx])
-    if entry_price <= 0:
-        raise ValueError(f"entry_price must be positive, got {entry_price}")
+    signal_atr = float(df["atr"].iloc[entry_idx])
+    if np.isnan(signal_atr) or signal_atr <= 0:
+        raise ValueError(f"entry ATR must be positive and finite, got {signal_atr}")
 
-    entry_atr = float(df["atr"].iloc[entry_idx])
-    if np.isnan(entry_atr) or entry_atr <= 0:
-        raise ValueError(f"entry ATR must be positive and finite, got {entry_atr}")
+    # The signal-bar close is reused as a synthetic fill in both
+    # early-return paths below (end-of-data and NaN-fill-bar). If
+    # the close itself is NaN, the synthetic fill would propagate
+    # NaN into the trade log; guard explicitly. (The signal-bar
+    # close is not part of the realistic-fill contract — it only
+    # feeds the fallback branches, which by construction should
+    # never see a "good" close.)
+    signal_close = float(df["close"].iloc[entry_idx])
+    if pd.isna(signal_close) or signal_close <= 0:
+        raise ValueError(
+            f"signal-bar close must be positive and finite for "
+            f"fallback-fill, got {signal_close}"
+        )
+    if entry_idx + 1 >= len(df):
+        return _build_result(
+            entry_idx, len(df) - 1, signal_close, signal_close, direction, "end_of_data"
+        )
 
-    # Calculate stop-loss price at entry
-    if direction == 1:  # long
-        sl_price = entry_price - (entry_atr * atr_multiplier)
-    else:  # short
-        sl_price = entry_price + (entry_atr * atr_multiplier)
+    fill_bar_idx = entry_idx + 1
+    fill_open = df["open"].iloc[fill_bar_idx]
+    if pd.isna(fill_open) or float(fill_open) <= 0:
+        # Corrupted T+1 bar — NaN guard path.
+        last_valid_close = (
+            df["close"].iloc[:fill_bar_idx].dropna().iloc[-1]
+            if fill_bar_idx > 0 else signal_close
+        )
+        return _build_result(
+            entry_idx, fill_bar_idx, signal_close, last_valid_close, direction, "nan_data"
+        )
+    entry_price = float(fill_open)
+
+    # SL price is computed from the realistic fill (T+1 open) and the
+    # signal-bar ATR — not from the signal bar's close. A corporation
+    # bar that opens THROUGH the planned SL on the fill bar itself
+    # (T+1 open already beyond SL) will gap-fill on i = entry_idx+1
+    # with exit_reason="open_gap_sl".
+    if direction == 1:
+        sl_price = entry_price - (signal_atr * atr_multiplier)
+    else:
+        sl_price = entry_price + (signal_atr * atr_multiplier)
 
     max_idx = min(entry_idx + max_bars, len(df) - 1)
 
@@ -121,33 +188,65 @@ def simulate_exit(
         high = bar["high"]
         low = bar["low"]
         close = bar["close"]
+        opn = bar["open"]
         adx = bar["adx"]
         regime_ok = bar["regime_ok"]
 
-        # NaN guard: if OHLC or critical indicators are NaN, exit at last known close
+        # NaN guard — exit at last known close, same as pre-fix.
         if pd.isna(close) or pd.isna(high) or pd.isna(low):
-            last_valid_close = df["close"].iloc[:i].dropna().iloc[-1] if i > 0 else entry_price
-            return _build_result(entry_idx, i, entry_price, last_valid_close, direction, "nan_data")
-        if pd.isna(z) or pd.isna(adx):
-            return _build_result(entry_idx, i, entry_price, close, direction, "nan_data")
+            last_valid_close = (
+                df["close"].iloc[:i].dropna().iloc[-1] if i > 0 else entry_price
+            )
+            return _build_result(
+                entry_idx, i, entry_price, last_valid_close, direction, "nan_data"
+            )
+        if pd.isna(z) or pd.isna(adx) or pd.isna(opn):
+            return _build_result(
+                entry_idx, i, entry_price, close, direction, "nan_data"
+            )
 
-        # 1. Stop Loss: price hits SL level (checked first for conservative simulation)
+        # 1. SL gap fill: bar opened at or beyond the planned SL — the
+        #    broker's auction does not let us stop out at the stated
+        #    price. Fill at open (worse than SL).
+        if direction == 1 and opn <= sl_price:
+            return _build_result(
+                entry_idx, i, entry_price, float(opn), direction, "open_gap_sl"
+            )
+        if direction == -1 and opn >= sl_price:
+            return _build_result(
+                entry_idx, i, entry_price, float(opn), direction, "open_gap_sl"
+            )
+
+        # 2. Intra-bar SL: bar reached the planned SL inside the
+        #    OHLC range. Fill at SL price.
         if direction == 1 and low <= sl_price:
-            return _build_result(entry_idx, i, entry_price, sl_price, direction, "sl")
+            return _build_result(
+                entry_idx, i, entry_price, sl_price, direction, "sl"
+            )
         if direction == -1 and high >= sl_price:
-            return _build_result(entry_idx, i, entry_price, sl_price, direction, "sl")
+            return _build_result(
+                entry_idx, i, entry_price, sl_price, direction, "sl"
+            )
 
-        # 2. Take Profit: z-score reversion
+        # 3. Take Profit: z-score reverts to 0 on this bar's close.
         if direction == 1 and z >= 0:
-            return _build_result(entry_idx, i, entry_price, close, direction, "tp")
+            return _build_result(
+                entry_idx, i, entry_price, close, direction, "tp"
+            )
         if direction == -1 and z <= 0:
-            return _build_result(entry_idx, i, entry_price, close, direction, "tp")
+            return _build_result(
+                entry_idx, i, entry_price, close, direction, "tp"
+            )
 
-        # 3. Regime Stop: ADX > threshold OR regime breaks
+        # 4. Regime Stop: ADX > threshold or regime breaks mid-trade.
         if adx > adx_stop_threshold or not regime_ok:
-            return _build_result(entry_idx, i, entry_price, close, direction, "regime")
+            return _build_result(
+                entry_idx, i, entry_price, close, direction, "regime"
+            )
 
-    # 4. Time Stop: max bars reached (or end of data)
+    # 5. Time / end-of-data — unchanged. Note: ``max_idx`` may be <
+    #    ``entry_idx + max_bars`` when the dataset ends earlier; in that
+    #    case the reason flips to "end_of_data".
     final_close = df["close"].iloc[max_idx]
     reason = "time" if max_idx == entry_idx + max_bars else "end_of_data"
     return _build_result(entry_idx, max_idx, entry_price, final_close, direction, reason)
@@ -220,10 +319,13 @@ def simulate_all_trades(
 
     trades: List[ExitResult] = []
     last_exit_pos = -1
+    total_signals = len(signals)
+    skipped = 0
 
     for pos, direction in signals:
         # Skip signals that fire while a previous trade is still open
         if pos <= last_exit_pos:
+            skipped += 1
             continue
 
         result = simulate_exit(
@@ -239,12 +341,20 @@ def simulate_all_trades(
 
     if not trades:
         # Return empty DataFrame with correct columns
-        return pd.DataFrame(columns=[
+        result_df = pd.DataFrame(columns=[
             "entry_idx", "exit_idx", "entry_price", "exit_price",
             "direction", "pnl_pct", "bars_held", "exit_reason",
         ])
+        result_df.attrs["signals_total"] = total_signals
+        result_df.attrs["signals_skipped"] = skipped
+        result_df.attrs["signals_executed"] = total_signals - skipped
+        return result_df
 
-    return pd.DataFrame(trades)
+    result_df = pd.DataFrame(trades)
+    result_df.attrs["signals_total"] = total_signals
+    result_df.attrs["signals_skipped"] = skipped
+    result_df.attrs["signals_executed"] = total_signals - skipped
+    return result_df
 
 
 def exit_reason_stats(trade_log: pd.DataFrame) -> pd.DataFrame:

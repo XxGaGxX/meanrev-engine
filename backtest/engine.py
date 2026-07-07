@@ -53,6 +53,7 @@ from indicators.pipeline import build_all_indicators
 from risk.sizing import (
     apply_position_sizing,
     build_equity_curve,
+    build_mtm_equity_curve,
     build_pct_curve,
 )
 from signals.entry import generate_entry_signals, signal_counts
@@ -116,7 +117,9 @@ class BacktestResult:
     naive_equity: pd.Series
     metrics: Dict[str, Any]
     config_used: Dict[str, Any]
+    equity_mtm: pd.Series = field(default_factory=lambda: pd.Series(dtype=float))
     signals: Dict[str, int] = field(default_factory=dict)
+    signals_skipped: int = 0
 
 
 def _default_cfg() -> Dict[str, Any]:
@@ -129,6 +132,13 @@ def _default_cfg() -> Dict[str, Any]:
     regime_keep = {
         "adx_threshold", "hurst_threshold",
         "atr_relative_std_threshold", "atr_window",
+        "use_fast_hurst",
+        "soft_scoring",
+        "score_adx_weight", "score_hurst_weight", "score_atr_weight",
+        "score_threshold",
+        "adaptive_hurst",
+        "adaptive_strong_trend_h", "adaptive_tight_threshold",
+        "adaptive_range_h", "adaptive_relax_threshold",
     }
     return {
         "indicators": dict(raw.get("indicators") or {}),
@@ -279,6 +289,7 @@ def run_backtest(
     # --- 7. Equity curves ---
     equity = build_equity_curve(trades, df, initial_equity=initial_equity)
     naive = build_pct_curve(trades, df, initial_equity=initial_equity)
+    equity_mtm = build_mtm_equity_curve(trades, df, initial_equity=initial_equity)
 
     # --- 8. Metrics ---
     # Prefer the cost-aware column when sizing actually produced it,
@@ -292,8 +303,10 @@ def run_backtest(
     else:
         trade_returns = pd.Series(dtype=float)
     periods_per_year = cfg_merged["timeframe"].get("bars_per_year")
+    signals_skipped = trades.attrs.get("signals_skipped", 0)
     metrics = calculate_all_metrics(
-        trade_returns, equity, periods_per_year=periods_per_year
+        trade_returns, equity, periods_per_year=periods_per_year,
+        equity_mtm=equity_mtm,
     )
 
     return BacktestResult(
@@ -301,9 +314,11 @@ def run_backtest(
         trades=trades,
         equity=equity,
         naive_equity=naive,
+        equity_mtm=equity_mtm,
         metrics=metrics,
         config_used=cfg_merged,
         signals=sig_counts,
+        signals_skipped=signals_skipped,
     )
 
 

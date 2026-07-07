@@ -38,7 +38,8 @@ indicators:
   adx:
     period: 14
   hurst:
-    window: 252
+    window: 252        # Slow Hurst (structural regime, ~9 days at 15-min)
+    fast_window: 50    # Fast Hurst (intraday micro, ~2 days) — used for regime filter
     min_lag: 2
     max_lag: 100
   rsi:
@@ -60,10 +61,21 @@ indicators:
 # REGIME FILTER (Level 1)
 # ───────────────────────────────────────────────
 regime_filter:
-  adx_threshold: 22
-  hurst_threshold: 0.45
+  adx_threshold: 25
+  hurst_threshold: 0.55
+  use_fast_hurst: true             # Use fast Hurst (window=50) for entry gate
+  soft_scoring: true               # Weighted scoring instead of binary AND
+  score_adx_weight: 0.40           # Weight for ADX component
+  score_hurst_weight: 0.40         # Weight for Hurst component
+  score_atr_weight: 0.20           # Weight for ATR component
+  score_threshold: 0.50            # Min aggregated score for regime_ok
+  adaptive_hurst: true             # Per-bar Hurst threshold via slow Hurst
+  adaptive_strong_trend_h: 0.60    # Slow Hurst > this -> tighten
+  adaptive_tight_threshold: 0.45   # Tight threshold (more selective)
+  adaptive_range_h: 0.50           # Slow Hurst < this -> relax
+  adaptive_relax_threshold: 0.55   # Relaxed threshold (more permissive)
   atr_relative_std_threshold: 2.0  # Exclude if ATR% > 2 std from mean
-  min_regime_coverage_pct: 20      # Min % of time regime_ok=True
+  min_regime_coverage_pct: 10      # Min % of time regime_ok=True
   max_regime_coverage_pct: 70      # Max % of time regime_ok=True
 
 # ───────────────────────────────────────────────
@@ -88,7 +100,7 @@ entry_signal:
 # ───────────────────────────────────────────────
 exit:
   atr_multiplier: 1.5
-  max_bars: 25                     # Time stop after N bars
+  max_bars: 12                     # Time stop after N bars
   adx_stop_threshold: 25           # Regime stop if ADX crosses above
 
 # ───────────────────────────────────────────────

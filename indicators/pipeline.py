@@ -15,7 +15,7 @@ import pandas as pd
 from .adx import add_adx
 from .atr import add_atr
 from .bollinger import add_bollinger
-from .hurst import add_hurst
+from .hurst import add_hurst, add_hurst_fast
 from .rsi import add_rsi
 from .volume import add_volume_filter
 from .zscore import add_zscore
@@ -51,6 +51,9 @@ def build_all_indicators(
 
     df = add_adx(df, **adx_cfg)
     df = add_hurst(df, **hurst_cfg)
+    # Fast Hurst for intraday micro-structure (Sprint 1 — bottleneck fix)
+    hurst_fast_window = int(hurst_cfg.get("fast_window", 50))
+    df = add_hurst_fast(df, window=hurst_fast_window)
     df = add_rsi(df, **rsi_cfg)
     df = add_bollinger(df, **bb_cfg)
     df = add_zscore(df, **z_cfg)

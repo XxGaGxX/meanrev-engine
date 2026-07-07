@@ -28,16 +28,23 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from dotenv import load_dotenv
 import pandas as pd
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# Load .env BEFORE any downstream import chain triggers
+# data.fetch.load_dotenv() — override=True makes sure we pick up the
+# latest .env values even if a stale import cached empty vars.
+load_dotenv(override=True)
+
 from utils.config import config
 from utils.metrics import max_drawdown, print_metrics
 
 from backtest.engine import BacktestResult, run_backtest
+from filters.regime import regime_component_breakdown
 from risk.sizing import build_equity_curve, build_pct_curve
 from signals.exit import exit_reason_stats
 
@@ -55,6 +62,8 @@ def fetch_data(symbol: str, n_bars: int) -> tuple[pd.DataFrame, str]:
         If Alpaca creds are missing, the API call fails, or no bars are
         returned. The demo does NOT silently fall back to synthetic data.
     """
+    from data.fetch import AlpacaDataClient
+
     required = ("ALPACA_API_KEY", "ALPACA_SECRET_KEY")
     missing_creds = [k for k in required if not os.getenv(k)]
     if missing_creds:
@@ -64,7 +73,6 @@ def fetch_data(symbol: str, n_bars: int) -> tuple[pd.DataFrame, str]:
             "or in a .env file (see .env.example)."
         )
 
-    from data.fetch import AlpacaDataClient
     client = AlpacaDataClient()
     end = pd.Timestamp.today() - pd.Timedelta(days=1)
     start = end - pd.Timedelta(days=int(n_bars * 15 / (60 * 6.5)) + 30)
@@ -92,7 +100,8 @@ def fetch_data(symbol: str, n_bars: int) -> tuple[pd.DataFrame, str]:
 # ──────────────────────────────────────────────────────────────────
 
 def step(name: str) -> None:
-    print(f"\n{'─' * 60}\n▶ {name}\n{'─' * 60}")
+    # ASCII-safe separators for Windows terminals (cp1252).
+    print(f"\n{'=' * 60}\n> {name}\n{'=' * 60}")
 
 
 def run_pipeline(df: pd.DataFrame) -> BacktestResult:
@@ -147,6 +156,11 @@ def run_pipeline(df: pd.DataFrame) -> BacktestResult:
         f"{result.signals['short_signals']} short"
     )
     print(f"  -- trades simulated:  {len(result.trades)}")
+    if result.signals_skipped > 0:
+        print(
+            f"  -- signals skipped:    {result.signals_skipped} "
+            f"(overlap with open trade)"
+        )
     print(f"  -- final equity:      ${result.equity.iloc[-1]:,.2f}")
     return result
 
@@ -313,6 +327,35 @@ def main() -> int:
     step("Engine metrics (computed by run_backtest)")
     print_metrics(result.metrics)
 
+    # Regime component breakdown
+    if "regime_ok" in df.columns:
+        regime_cfg = result.config_used.get("regime_filter", {})
+        breakdown = regime_component_breakdown(
+            df,
+            adx_threshold=float(regime_cfg.get("adx_threshold", 22.0)),
+            hurst_threshold=float(regime_cfg.get("hurst_threshold", 0.45)),
+            atr_relative_std_threshold=float(
+                regime_cfg.get("atr_relative_std_threshold", 2.0)
+            ),
+        )
+        print(f"\nRegime filter component breakdown ({breakdown['n_bars']} bars):")
+        print(f"  ADX pass:          {breakdown['adx_pass_pct']:5.1f}%")
+        if "hurst_fast_pass_pct" in breakdown:
+            print(f"  Hurst fast pass:   {breakdown['hurst_fast_pass_pct']:5.1f}% (window=50, entry gate)")
+        print(f"  Hurst slow pass:   {breakdown['hurst_pass_pct']:5.1f}% (window=252, diagnostic)")
+        print(f"  ATR z pass:        {breakdown['atr_rel_z_pass_pct']:5.1f}%")
+        print(f"  Combined:          {breakdown['all_pass_pct']:5.1f}%")
+        # Soft scoring diagnostics
+        if "mean_regime_score" in breakdown:
+            print(f"\nSoft scoring diagnostics:")
+            print(f"  Mean regime score:    {breakdown['mean_regime_score']:.3f}")
+            if "mean_adx_score" in breakdown:
+                print(f"  Mean ADX score:       {breakdown['mean_adx_score']:.3f}")
+            if "mean_hurst_score" in breakdown:
+                print(f"  Mean Hurst score:     {breakdown['mean_hurst_score']:.3f}")
+            if "mean_atr_score" in breakdown:
+                print(f"  Mean ATR score:       {breakdown['mean_atr_score']:.3f}")
+
     # Exit reason breakdown
     if not trades.empty:
         print("\nExit reasons:")
@@ -328,7 +371,7 @@ def main() -> int:
         )
         print(f"  -- saved to {path}")
 
-    print("\n✓ Demo complete.")
+    print("\n[OK] Demo complete.")
     return 0
 
 

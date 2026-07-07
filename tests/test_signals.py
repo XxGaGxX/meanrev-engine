@@ -200,12 +200,18 @@ class TestEntrySignals:
 
 class TestExitSimulation:
     def test_simulate_exit_long_tp(self):
-        """Long trade: zscore reverts to >=0 → TP."""
+        """Long trade: zscore reverts to >=0 → TP.
+
+        Realistic-fill note: all ``open`` values are pinned to 100.0
+        so no post-entry bar can gap-fill the very tight SL
+        (100 - 1.5*0.01 = 99.985) by accident.
+        """
         df = _make_df(n=30)
         df["zscore"] = np.concatenate([[-2.5], np.linspace(-1, 1, 29)])
         df["adx"] = 20.0
         df["regime_ok"] = True
         df["atr"] = 0.01  # tiny ATR so SL is never hit
+        df["open"] = 100.0  # pin opens so no bar gaps past SL=99.985
         df.loc[df.index[0], "close"] = 100.0
         # Ensure low doesn't hit SL (SL = 100 - 1.5*0.01 = 99.985)
         for i in range(len(df)):
@@ -230,10 +236,17 @@ class TestExitSimulation:
         assert result["exit_reason"] == "tp"
 
     def test_simulate_exit_long_sl(self):
-        """Long trade: price drops below SL → SL exit."""
+        """Long trade: price drops below SL → SL exit.
+
+        Realistic-fill contract (2026-07-07): entry fills at T+1 open
+        (not at signal-bar close). We pin T+1 open to 100 so the SL
+        price is deterministic: 100 - 1.5*2 = 97.
+        """
         df = _make_df(n=30)
         df.loc[df.index[0], "close"] = 100.0
         df.loc[df.index[0], "atr"] = 2.0
+        # Realistic-fill: T+1 open is the actual fill price.
+        df.loc[df.index[1], "open"] = 100.0
         # SL = 100 - 1.5*2 = 97
         for i in range(1, 10):
             df.loc[df.index[i], "low"] = 96.0
@@ -246,14 +259,26 @@ class TestExitSimulation:
         result = simulate_exit(df, entry_idx=0, direction=1)
         assert result["exit_reason"] == "sl"
         assert result["exit_price"] == pytest.approx(97.0, rel=1e-9)
+        # Realistic fill: entry_price = T+1 open = 100, not close of
+        # signal bar.
+        assert result["entry_price"] == pytest.approx(100.0, rel=1e-9)
+        # bars_held is exit_idx - entry_idx, where entry_idx is the
+        # signal bar and exit_idx is the bar where the trigger fired.
+        assert result["bars_held"] == 1
 
     def test_simulate_exit_time_stop(self):
-        """Trade held until max_bars → time stop."""
+        """Trade held until max_bars → time stop.
+
+        Realistic-fill note: all opens pinned to 100.0 so the very
+        tight SL (100 - 1.5*0.001 = 99.9985) cannot be gap-filled
+        by a random open from ``_make_df``.
+        """
         df = _make_df(n=50)
         df["zscore"] = -1.0  # never reaches TP
         df["adx"] = 20.0
         df["regime_ok"] = True
         df["atr"] = 0.001  # tiny ATR so SL isn't hit
+        df["open"] = 100.0  # pin opens so no bar gaps past SL=99.9985
         df.loc[df.index[0], "close"] = 100.0
         # Ensure low doesn't hit SL
         for i in range(len(df)):
@@ -265,13 +290,19 @@ class TestExitSimulation:
         assert result["bars_held"] == 5
 
     def test_simulate_exit_regime_stop(self):
-        """ADX spikes above threshold → regime stop."""
+        """ADX spikes above threshold → regime stop.
+
+        Realistic-fill note: all opens pinned to 100.0 so the very
+        tight SL (100 - 1.5*0.001 = 99.9985) cannot be gap-filled
+        before the regime_stop at bar 5.
+        """
         df = _make_df(n=30)
         df["zscore"] = -1.0
         df["adx"] = 20.0
         df.loc[df.index[5], "adx"] = 30.0  # spike
         df["regime_ok"] = True
         df["atr"] = 0.001
+        df["open"] = 100.0  # pin opens so no bar gaps past SL=99.9985
         df.loc[df.index[0], "close"] = 100.0
         # Ensure low doesn't hit SL
         for i in range(len(df)):
@@ -375,12 +406,18 @@ class TestSimulateAllTrades:
         assert stats.empty
 
     def test_nan_guard_exits_immediately(self):
-        """If zscore becomes NaN mid-trade, exit immediately with nan_data reason."""
+        """If zscore becomes NaN mid-trade, exit immediately with nan_data reason.
+
+        Realistic-fill note: all opens pinned to 100.0 so the very
+        tight SL (100 - 1.5*0.001 = 99.9985) cannot be gap-filled
+        before the NaN injection at bar 7.
+        """
         df = _make_df(n=30)
         df["zscore"] = -1.0
         df["adx"] = 20.0
         df["regime_ok"] = True
         df["atr"] = 0.001
+        df["open"] = 100.0  # pin opens so no bar gaps past SL=99.9985
         df.loc[df.index[0], "close"] = 100.0
         for i in range(len(df)):
             df.loc[df.index[i], "low"] = 99.999
@@ -421,3 +458,428 @@ class TestSimulateAllTrades:
         assert trades.iloc[2]["entry_idx"] == 25
         # Verify overlap skipping: next signal at 25, previous exits at 20 (5+5)
         assert trades.iloc[2]["entry_idx"] > trades.iloc[1]["exit_idx"]
+
+
+class TestSignalsSkipped:
+    """Tests for signals_skipped counter (FIX_PLAN_v2 Step 5)."""
+
+    def test_signals_skipped_counted(self):
+        """Two overlapped signals: second is skipped, counter reflects it."""
+        df = _make_df(n=50)
+        df["signal_long"] = False
+        df["signal_short"] = False
+        # Two close long signals: bar 5 and bar 6
+        df.loc[df.index[5], "signal_long"] = True
+        df.loc[df.index[6], "signal_long"] = True
+        # Make first trade take long enough to overlap
+        df["zscore"] = -1.0
+        df["adx"] = 20.0
+        df["regime_ok"] = True
+        df["atr"] = 0.001
+        for i in range(len(df)):
+            df.loc[df.index[i], "low"] = 99.999
+            df.loc[df.index[i], "high"] = 100.001
+
+        trades = simulate_all_trades(df, cfg={"max_bars": 10})
+        assert trades.attrs["signals_total"] == 2
+        assert trades.attrs["signals_skipped"] >= 1
+        assert trades.attrs["signals_executed"] == 1
+
+    def test_signals_skipped_zero_when_no_overlap(self):
+        """Well-spaced signals: none are skipped."""
+        df = _make_df(n=60)
+        df["signal_long"] = False
+        df["signal_short"] = False
+        # Signals far apart: bar 5 and bar 40
+        df.loc[df.index[5], "signal_long"] = True
+        df.loc[df.index[40], "signal_long"] = True
+        df["zscore"] = -1.0
+        df["adx"] = 20.0
+        df["regime_ok"] = True
+        df["atr"] = 0.001
+        for i in range(len(df)):
+            df.loc[df.index[i], "low"] = 99.999
+            df.loc[df.index[i], "high"] = 100.001
+
+        trades = simulate_all_trades(df, cfg={"max_bars": 5})
+        assert trades.attrs["signals_total"] == 2
+        assert trades.attrs["signals_skipped"] == 0
+        assert trades.attrs["signals_executed"] == 2
+
+    def test_signals_skipped_empty_df(self):
+        """No signals: total=0, skipped=0, executed=0."""
+        df = _make_df(n=10)
+        df["signal_long"] = False
+        df["signal_short"] = False
+        trades = simulate_all_trades(df)
+        assert trades.attrs["signals_total"] == 0
+        assert trades.attrs["signals_skipped"] == 0
+        assert trades.attrs["signals_executed"] == 0
+
+
+class TestRealisticFillContract:
+    """
+    Invariant tests for the realistic-fill contract introduced
+    2026-07-07 to close the execution-model look-ahead bias.
+
+    Contract recap (see ``signals.exit.simulate_exit`` docstring):
+
+    1. Entry fills at OPEN of T+1 (next bar after signal), not at
+       the close of the signal bar.
+    2. When a post-trigger bar opens AT OR BEYOND the planned SL,
+       the trade gap-fills at that bar's OPEN with
+       ``exit_reason == "open_gap_sl"``.
+    3. When a post-trigger bar reaches the SL inside its OHLC
+       range, fill at the SL price with ``exit_reason == "sl"``.
+    4. Take Profit is still close-based (z-score on close), so it
+       does not gap-fill.
+    """
+
+    def test_entry_fills_at_t_plus_1_open_not_signal_close(self):
+        """
+        Construct a df where signal-bar close and T+1 open are
+        DIFFERENT. The trade MUST use T+1 open as entry_price, not
+        the signal-bar close. This locks the no-look-ahead contract.
+        """
+        df = _make_df(n=30)
+        # Signal bar 0: close = 100, ATR = 1.
+        df.loc[df.index[0], "close"] = 100.0
+        df.loc[df.index[0], "atr"] = 1.0
+        # T+1 (bar 1): open = 105 — a deliberate gap up. The trade
+        # must fill at 105, not at the close-of-signal 100.
+        df.loc[df.index[1], "open"] = 105.0
+        df.loc[df.index[1], "high"] = 106.0
+        df.loc[df.index[1], "low"] = 104.0
+        df.loc[df.index[1], "close"] = 105.5
+        # Tame all later bars so no post-entry bar can hit the SL
+        # (105 - 1.5*1 = 103.5). We pin high/low/close as well as
+        # open because ``_make_df`` already computed high/low from
+        # the original random-walk opens; overriding ``open`` alone
+        # would leave random low values that easily hit the SL.
+        df.loc[df.index[2:], "open"] = 110.0
+        df.loc[df.index[2:], "high"] = 111.0
+        df.loc[df.index[2:], "low"] = 109.0
+        df.loc[df.index[2:], "close"] = 110.5
+        # z-score path: -2 -> +1 over 9 bars so TP fires mid-trade
+        # (TP fires on the first bar where z >= 0, around bar 7).
+        df["zscore"] = np.concatenate(
+            [[-2.0], np.linspace(-2, 1, 9), [0.5] * (len(df) - 10)]
+        )
+        df["adx"] = 20.0
+        df["regime_ok"] = True
+        df["atr"] = 1.0  # constant ATR for deterministic SL math
+
+        result = simulate_exit(df, entry_idx=0, direction=1)
+        # Realistic fill: T+1 open, NOT signal-bar close.
+        assert result["entry_price"] == pytest.approx(105.0, rel=1e-9)
+        # The pre-fix bias (close-of-signal) would have used 100.0.
+        assert result["entry_price"] != pytest.approx(100.0, rel=1e-9)
+        # Sanity: the trade must have hit TP at some point.
+        assert result["exit_reason"] == "tp"
+
+    def test_sl_gap_fill_when_post_entry_bar_opens_past_sl(self):
+        """
+        Long trade. On bar i = entry_idx + 2 the open is BELOW the
+        planned SL. The trade MUST gap-fill at that open with
+        ``exit_reason == "open_gap_sl"``, NOT at the SL price.
+        """
+        df = _make_df(n=30)
+        # Signal at bar 0.
+        df.loc[df.index[0], "close"] = 100.0
+        df.loc[df.index[0], "atr"] = 1.0
+        # T+1 fill: open = 100. SL = 100 - 1.5*1 = 98.5.
+        df.loc[df.index[1], "open"] = 100.0
+        df.loc[df.index[1], "high"] = 100.5
+        df.loc[df.index[1], "low"] = 99.5
+        df.loc[df.index[1], "close"] = 99.8
+        # T+2: open gaps DOWN to 98.0, well below SL of 98.5. This
+        # is the gap-fill bar.
+        df.loc[df.index[2], "open"] = 98.0
+        df.loc[df.index[2], "high"] = 98.4
+        df.loc[df.index[2], "low"] = 97.0
+        df.loc[df.index[2], "close"] = 97.5
+        # Tame the rest of the bars so a regime stop or time stop
+        # never pre-empts the gap-fill observation.
+        for i in range(3, len(df)):
+            df.loc[df.index[i], "open"] = 100.0
+            df.loc[df.index[i], "high"] = 100.5
+            df.loc[df.index[i], "low"] = 99.5
+            df.loc[df.index[i], "close"] = 100.0
+        # Prevent TP by keeping z-score always negative.
+        df["zscore"] = -1.0
+        df["adx"] = 20.0
+        df["regime_ok"] = True
+        df["atr"] = 1.0
+
+        result = simulate_exit(df, entry_idx=0, direction=1)
+        # The fill bar at idx 1 has open=100, not a gap. The
+        # gap-fill should fire on bar 2.
+        assert result["exit_reason"] == "open_gap_sl"
+        assert result["exit_idx"] == 2
+        # exit_price = the open of the gap bar (98.0), NOT the SL
+        # price (98.5). This is the gap-fill contract: cannot fill at
+        # SL when the market gapped through.
+        assert result["exit_price"] == pytest.approx(98.0, rel=1e-9)
+        assert result["entry_price"] == pytest.approx(100.0, rel=1e-9)
+
+    def test_intra_bar_sl_still_fills_at_sl_price(self):
+        """
+        Long trade. The post-trigger bar opens INSIDE the SL
+        corridor (open > SL) but its low reaches the SL. The trade
+        must fill at the SL price, not at the open. This locks the
+        pre-existing intra-bar SL contract.
+        """
+        df = _make_df(n=30)
+        df.loc[df.index[0], "close"] = 100.0
+        df.loc[df.index[0], "atr"] = 1.0
+        # T+1 fill: open = 100, SL = 98.5.
+        df.loc[df.index[1], "open"] = 100.0
+        df.loc[df.index[1], "high"] = 100.5
+        df.loc[df.index[1], "low"] = 99.5
+        df.loc[df.index[1], "close"] = 99.8
+        # T+2: opens at 99 (above SL of 98.5 → not a gap), but
+        # the bar's low reaches 98.4 (below SL of 98.5).
+        # Intra-bar SL fills at the SL price (98.5).
+        df.loc[df.index[2], "open"] = 99.0
+        df.loc[df.index[2], "high"] = 99.4
+        df.loc[df.index[2], "low"] = 98.4
+        df.loc[df.index[2], "close"] = 98.8
+        # Tame the rest.
+        for i in range(3, len(df)):
+            df.loc[df.index[i], "open"] = 100.0
+            df.loc[df.index[i], "high"] = 100.5
+            df.loc[df.index[i], "low"] = 99.5
+            df.loc[df.index[i], "close"] = 100.0
+        df["zscore"] = -1.0  # never TP
+        df["adx"] = 20.0
+        df["regime_ok"] = True
+        df["atr"] = 1.0
+
+        result = simulate_exit(df, entry_idx=0, direction=1)
+        assert result["exit_reason"] == "sl"
+        assert result["exit_price"] == pytest.approx(98.5, rel=1e-9)
+        # And NOT the bar's open (99.0) nor its low (98.4): the
+        # fill is the planned SL price.
+        assert result["exit_price"] != pytest.approx(99.0, rel=1e-9)
+        assert result["exit_price"] != pytest.approx(98.4, rel=1e-9)
+
+    def test_sl_gap_fill_for_short(self):
+        """
+        Symmetric short-side gap-fill test. On a short, when bar i
+        opens at or above the planned SL (which is ABOVE
+        entry_price for shorts), the trade must gap-fill at that
+        open with ``exit_reason == "open_gap_sl"``.
+        """
+        df = _make_df(n=30)
+        df.loc[df.index[0], "close"] = 100.0
+        df.loc[df.index[0], "atr"] = 1.0
+        # T+1 fill: open = 100. Short SL = 100 + 1.5 = 101.5.
+        df.loc[df.index[1], "open"] = 100.0
+        df.loc[df.index[1], "high"] = 100.5
+        df.loc[df.index[1], "low"] = 99.5
+        df.loc[df.index[1], "close"] = 99.8
+        # T+2: open gaps UP to 102.0, above SL of 101.5. Gap-fill
+        # fires for the short.
+        df.loc[df.index[2], "open"] = 102.0
+        df.loc[df.index[2], "high"] = 102.4
+        df.loc[df.index[2], "low"] = 101.9
+        df.loc[df.index[2], "close"] = 102.1
+        for i in range(3, len(df)):
+            df.loc[df.index[i], "open"] = 100.0
+            df.loc[df.index[i], "high"] = 100.5
+            df.loc[df.index[i], "low"] = 99.5
+            df.loc[df.index[i], "close"] = 100.0
+        df["zscore"] = 1.0  # never TP for short
+        df["adx"] = 20.0
+        df["regime_ok"] = True
+        df["atr"] = 1.0
+
+        result = simulate_exit(df, entry_idx=0, direction=-1)
+        assert result["exit_reason"] == "open_gap_sl"
+        assert result["exit_idx"] == 2
+        assert result["exit_price"] == pytest.approx(102.0, rel=1e-9)
+        assert result["entry_price"] == pytest.approx(100.0, rel=1e-9)
+
+    def test_entry_bar_cannot_self_gap_fill(self):
+        """
+        Structural invariant: the entry bar (T+1) cannot gap-fill
+        its own SL by construction, because the SL price is
+        computed from entry_price (long: SL = open - 1.5*ATR, so
+        the gap-fill condition ``opn <= sl_price`` reduces to
+        ``open <= open - 1.5*ATR`` which is impossible when ATR > 0).
+
+        We pin this property by constructing a scenario that
+        DELIBERATELY produces a gap-fill on bar i = entry_idx+2
+        (the earliest possible gap-fill bar) and asserting the
+        trade does NOT exit on the fill bar (i = entry_idx+1).
+        If a future refactor lets the fill bar self-gap-fill, the
+        test's hard ``exit_idx != entry_idx+1`` assertion trips.
+        """
+        df = _make_df(n=30)
+        df.loc[df.index[0], "close"] = 100.0
+        df.loc[df.index[0], "atr"] = 1.0
+        # T+1 open = 100. SL = 100 - 1.5*1 = 98.5. The fill bar
+        # open (100) is NOT <= SL (98.5), so the gap-fill on the
+        # fill bar itself is structurally impossible.
+        df.loc[df.index[1], "open"] = 100.0
+        df.loc[df.index[1], "high"] = 100.5
+        df.loc[df.index[1], "low"] = 99.5
+        df.loc[df.index[1], "close"] = 100.0
+        # T+2: open = 95 (below SL of 98.5). This is the bar where
+        # the gap-fill MUST fire, and it must fire here (not on
+        # bar 1).
+        df.loc[df.index[2], "open"] = 95.0
+        df.loc[df.index[2], "high"] = 95.4
+        df.loc[df.index[2], "low"] = 94.0
+        df.loc[df.index[2], "close"] = 95.0
+        for i in range(3, len(df)):
+            df.loc[df.index[i], "open"] = 100.0
+            df.loc[df.index[i], "high"] = 100.5
+            df.loc[df.index[i], "low"] = 99.5
+            df.loc[df.index[i], "close"] = 100.0
+        df["zscore"] = -1.0  # never TP
+        df["adx"] = 20.0
+        df["regime_ok"] = True
+        df["atr"] = 1.0
+
+        result = simulate_exit(df, entry_idx=0, direction=1)
+        # The trade MUST reach the gap-fill at i = entry_idx + 2.
+        # This single assertion locks the structural property: the
+        # fill bar (i = entry_idx + 1) cannot self-gap-fill, so the
+        # earliest possible gap-fill is bar 2. (Long: gap-fill is
+        # ``opn <= SL`` = ``opn <= entry_price - 1.5*ATR``, which
+        # is impossible on the fill bar where opn = entry_price.)
+        assert result["exit_reason"] == "open_gap_sl"
+        assert result["exit_idx"] == 2, (
+            "Gap-fill on the entry bar itself is impossible by "
+            "construction (SL = entry_price - 1.5*ATR, so opn <= "
+            "SL reduces to 0 <= -1.5*ATR). If exit_idx != 2, the "
+            "SL math has regressed."
+        )
+
+    def test_realistic_fill_diverges_from_old_signal_close_contract(self):
+        """
+        The realistic-fill contract MUST produce a DIFFERENT pnl_pct
+        than the old (close-of-signal) contract would have, when
+        T+1 open diverges from the signal-bar close.
+
+        Construct a scenario where:
+        - signal-bar close = 100 (this is what the OLD contract
+          would have used as the entry price);
+        - T+1 open = 110 (a 10% gap up — a LARGE divergence that
+          makes the contracts numerically distinct);
+        - the trade hits TP before any gap-fill can fire.
+
+        With realistic fill, entry_price = 110. With old contract,
+        entry_price = 100. The same exit price therefore yields
+        different pnl_pct under the two contracts.
+        """
+        df = _make_df(n=30)
+        df.loc[df.index[0], "close"] = 100.0  # signal-bar close
+        df.loc[df.index[0], "atr"] = 1.0
+        # T+1 open = 110 (deliberate 10% gap up vs signal close 100).
+        df.loc[df.index[1], "open"] = 110.0
+        df.loc[df.index[1], "high"] = 111.0
+        df.loc[df.index[1], "low"] = 109.0
+        df.loc[df.index[1], "close"] = 110.5
+        # Tame all later bars so no post-entry bar can hit the SL
+        # (110 - 1.5*1 = 108.5). We pin high/low/close as well as
+        # open because ``_make_df`` already computed high/low from
+        # the original random-walk opens.
+        df.loc[df.index[2:], "open"] = 115.0
+        df.loc[df.index[2:], "high"] = 116.0
+        df.loc[df.index[2:], "low"] = 114.0
+        df.loc[df.index[2:], "close"] = 115.5
+        # z-score path: -2 -> +1 over 9 bars so TP fires mid-trade.
+        df["zscore"] = np.concatenate(
+            [[-2.0], np.linspace(-2, 1, 9), [0.5] * (len(df) - 10)]
+        )
+        df["adx"] = 20.0
+        df["regime_ok"] = True
+        df["atr"] = 1.0
+
+        result = simulate_exit(df, entry_idx=0, direction=1)
+        # Realistic fill uses T+1 open.
+        assert result["entry_price"] == pytest.approx(110.0, rel=1e-9)
+        # Sanity: the trade must have hit TP (no gap-fill because
+        # all opens after the fill bar are at 115, far above SL 108.5).
+        assert result["exit_reason"] == "tp"
+        # Compute the OLD-contract pnl_pct for comparison: with the
+        # same exit_price and a hypothetical entry_price=100, the
+        # pnl_pct would be (exit_price - 100) / 100.
+        old_pnl_pct = (result["exit_price"] - 100.0) / 100.0
+        # Sign-pinned assertion: the realistic fill (entry at T+1
+        # open = 110) is at a higher price than the old contract
+        # would have used (entry at signal close = 100). For the
+        # same exit, pnl_pct MUST be strictly smaller under the
+        # realistic contract. A coincidental `!=` could pass if a
+        # regression silently reversed the contract direction; this
+        # deterministic `<` catches it.
+        assert result["pnl_pct"] < old_pnl_pct, (
+            f"Realistic-fill pnl_pct ({result['pnl_pct']:.6f}) must be "
+            f"strictly less than the old-contract pnl_pct "
+            f"({old_pnl_pct:.6f}) when T+1 open (110) exceeds the "
+            f"signal-bar close (100). A higher entry price on the "
+            f"same exit yields a smaller return. If this fails, the "
+            f"contract direction has been silently reversed."
+        )
+
+    def test_realistic_fill_diverges_for_short(self):
+        """
+        Symmetric SHORT version of the divergence test.
+
+        Construct a scenario where:
+        - signal-bar close = 100 (what OLD contract would have used);
+        - T+1 open = 90 (a gap DOWN, more favorable for the short);
+        - the trade hits TP (z <= 0 for a short) before any gap-fill.
+
+        With the realistic fill (entry at 90), the percentage return
+        is computed with a smaller denominator than the old contract
+        (entry at 100). For the same exit price, the realistic
+        contract's pnl_pct MUST be strictly smaller — same sign
+        direction as the LONG test because a higher-denominator
+        entry on the same exit yields a smaller return.
+        """
+        df = _make_df(n=30)
+        df.loc[df.index[0], "close"] = 100.0  # signal-bar close
+        df.loc[df.index[0], "atr"] = 1.0
+        # T+1 open = 90 (gap DOWN; short fills at a lower price).
+        df.loc[df.index[1], "open"] = 90.0
+        df.loc[df.index[1], "high"] = 91.0
+        df.loc[df.index[1], "low"] = 89.0
+        df.loc[df.index[1], "close"] = 90.5
+        # Tame all later bars so no post-entry bar can gap-fill the
+        # SL (for short: SL = 90 + 1.5*1 = 91.5, gap-fill fires when
+        # open >= 91.5). Pin all later opens to 85 (well below SL).
+        df.loc[df.index[2:], "open"] = 85.0
+        df.loc[df.index[2:], "high"] = 86.0
+        df.loc[df.index[2:], "low"] = 84.0
+        df.loc[df.index[2:], "close"] = 85.5
+        # z-score path: +2 -> -1 so TP (z <= 0) fires mid-trade.
+        df["zscore"] = np.concatenate(
+            [[2.0], np.linspace(2, -1, 9), [-0.5] * (len(df) - 10)]
+        )
+        df["adx"] = 20.0
+        df["regime_ok"] = True
+        df["atr"] = 1.0
+
+        result = simulate_exit(df, entry_idx=0, direction=-1)
+        # Realistic fill uses T+1 open.
+        assert result["entry_price"] == pytest.approx(90.0, rel=1e-9)
+        # Sanity: the trade must have hit TP (no gap-fill because all
+        # later opens are at 85, well below SL 91.5).
+        assert result["exit_reason"] == "tp"
+        # Old contract would have entered at signal close (100).
+        # Short pnl = -1 * (exit - entry) / entry.
+        old_pnl_pct = -1.0 * (result["exit_price"] - 100.0) / 100.0
+        # Sign-pinned: the realistic fill (entry at 90) has a smaller
+        # denominator → smaller pnl_pct for the same exit. Same sign
+        # as the LONG divergence test.
+        assert result["pnl_pct"] < old_pnl_pct, (
+            f"Realistic-fill short pnl_pct ({result['pnl_pct']:.6f}) must "
+            f"be strictly less than the old-contract pnl_pct "
+            f"({old_pnl_pct:.6f}) when T+1 open (90) is below the "
+            f"signal-bar close (100). A lower short-entry price on the "
+            f"same exit magnifies the divergence. If this fails, the "
+            f"contract direction has been silently reversed."
+        )

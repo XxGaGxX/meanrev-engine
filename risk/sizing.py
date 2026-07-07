@@ -35,6 +35,7 @@ Usage:
 from __future__ import annotations
 
 import math
+from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -441,6 +442,105 @@ def build_equity_curve(
         equity.append(running)
 
     return pd.Series(equity, index=pd.DatetimeIndex(timestamps), name="equity")
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 5. Mark-to-market equity curve (per-bar)
+# ─────────────────────────────────────────────────────────────────────
+
+def build_mtm_equity_curve(
+    trades: pd.DataFrame,
+    df: pd.DataFrame,
+    initial_equity: float = 10_000.0,
+) -> pd.Series:
+    """
+    Build a per-bar mark-to-market equity curve.
+
+    For every bar in ``df.index``, computes the account value as::
+
+        cash + sum(unrealized PnL of open positions)
+
+    When no positions are open, the curve is flat at the last realized
+    equity level. When a position is open, the curve reflects the
+    current market value of the position.
+
+    Parameters
+    ----------
+    trades : pd.DataFrame
+        Sized trade log from ``apply_position_sizing``. Must contain
+        columns: ``entry_idx``, ``exit_idx``, ``direction``, ``shares``,
+        ``equity_after``, ``pnl_dollar``, ``commission_cost``,
+        ``entry_price``.
+    df : pd.DataFrame
+        Cleaned + indicators DataFrame. Must have a ``close`` column
+        and a DatetimeIndex.
+    initial_equity : float
+        Starting equity in dollars.
+
+    Returns
+    -------
+    pd.Series
+        Index = df.index, values = per-bar equity in dollars.
+        Length = len(df), starting at initial_equity before the first
+        trade and ending at the last bar's close.
+
+        Returns a 1-element NaT-anchored Series when ``df`` is empty.
+    """
+    if df.empty:
+        return pd.Series(
+            [float(initial_equity)],
+            index=pd.DatetimeIndex([pd.NaT]),
+            name="equity_mtm",
+        )
+
+    n = len(df)
+    equity = np.full(n, np.nan, dtype=float)
+    cash = float(initial_equity)
+
+    if trades is None or trades.empty:
+        equity[:] = cash
+        return pd.Series(equity, index=df.index, name="equity_mtm")
+
+    # Build lookup maps: bar_index → list of trade indices
+    entries: dict[int, list[int]] = defaultdict(list)
+    exits: dict[int, list[int]] = defaultdict(list)
+    for t_idx in range(len(trades)):
+        entries[int(trades.iloc[t_idx]["entry_idx"])].append(t_idx)
+        exits[int(trades.iloc[t_idx]["exit_idx"])].append(t_idx)
+
+    # open_positions: trade_idx → {shares, direction, entry_price}
+    open_positions: dict[int, dict[str, float]] = {}
+
+    for i in range(n):
+        close_price = float(df["close"].iloc[i])
+
+        # Process exits FIRST so the bar's equity reflects post-exit cash
+        for t_idx in exits.get(i, []):
+            if t_idx in open_positions:
+                del open_positions[t_idx]
+            # cash snaps to equity_after for this trade
+            cash = float(trades.iloc[t_idx]["equity_after"])
+
+        # Process entries
+        for t_idx in entries.get(i, []):
+            row = trades.iloc[t_idx]
+            open_positions[t_idx] = {
+                "shares": float(row["shares"]),
+                "direction": float(row["direction"]),
+                "entry_price": float(row["entry_price"]),
+            }
+
+        # MTM: sum unrealized PnL across all open positions
+        unrealized = 0.0
+        for pos in open_positions.values():
+            unrealized += (
+                pos["shares"]
+                * pos["direction"]
+                * (close_price - pos["entry_price"])
+            )
+        equity[i] = cash + unrealized
+
+    return pd.Series(equity, index=df.index, name="equity_mtm")
 
 
 def build_pct_curve(

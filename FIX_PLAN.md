@@ -482,4 +482,46 @@ Dopo aver applicato tutti i fix CRITICAL e MEDIUM, verificare:
 
 ---
 
-*Questo fix plan è stato generato dalla code review del 2026-07-06. Da aggiornare man mano che i fix vengono applicati.*
+## 7. Reconciliation — TA-Lib environment (2026-07-07)
+
+A `python -m pytest tests/` run during the Slice 3 review (2026-07-07) surfaced **4 test collection errors** that the previous sprint had marked as resolved:
+
+```
+ERROR tests/test_backtest.py     - ModuleNotFoundError: No module named 'talib'
+ERROR tests/test_indicators.py   - ModuleNotFoundError: No module named 'talib'
+ERROR tests/test_integration.py  - ModuleNotFoundError: No module named 'talib'
+ERROR tests/test_pipeline.py     - ModuleNotFoundError: No module named 'talib'
+```
+
+Sprint 2 M1 (mark ✅ “backtrader, vectorbt, talib, pandas OK”) was therefore **incorrect**: TA-Lib was neither installed in the venv nor pinned in `requirements.txt`, despite being imported by every indicator module (`indicators/adx.py`, `atr.py`, `bollinger.py`, `rsi.py`).
+
+### Root cause
+- `requirements.txt` listed `alpaca-py`, `backtrader`, `matplotlib`, `numpy`, `pandas`, `python-dotenv`, `PyYAML`, `vectorbt` — **no `TA-Lib`**.
+- Sprint 2 M1 “test import backtrader” was executed against an interpreter that happened to have the `talib` package in a different env, and the result was assumed-fine without a follow-up `pip freeze` check inside the project venv.
+
+### Fix (this iteration)
+- Host survey: neither `conda`, `mamba`, `micromamba`, nor `choco` is installed on this Windows host, so the conda / mamba routes were unavailable. The user requested “conda or prebuilt wheels” — pip prebuilt wheels were the only path.
+- `pip` resolves `TA-Lib` to a wheel that **bundles the C library** (since upstream TA-Lib 0.6.5+, precompiled Windows wheels ship the `ta-lib` C DLL inside the wheel itself):
+  - Downloaded: `ta_lib-0.7.0-cp314-cp314-win_amd64.whl` (Python 3.14.5, 64-bit Windows)
+  - Install: `python -m pip install --upgrade-strategy only-if-needed TA-Lib` → resolved 0.7.0
+- `requirements.txt` updated to add `TA-Lib==0.7.0`.
+
+### Verification (2026-07-07)
+
+| Check | Command | Result |
+|---|---|---|
+| Importable | `python -c "import talib; print(talib.__version__)"` | `0.7.0` |
+| Indicator imports | `from indicators.adx import add_adx; …` (all 4) | clean |
+| Test collection | `pytest tests/ --collect-only -q` | **194 tests** collected (was: 4 collection errors) |
+| Test execution | `pytest tests/ -q` | **194 passed**, 0 failed, 1 unrelated `websockets` DeprecationWarning |
+
+**Note on test count.** Sprint 3 closed at 189 tests. The 2026-07-07 reconciliation run reports **194** — a **+5 net** since the freeze, attributable to the Slice 2 fetch-wrapper (`TestRunBacktestForSymbol`, `TestFetchBars`, `TestRiskCfgPropagation`, `TestBarsPerYearPropagation`, `TestEquityCurveDatetimeIndex`, `TestBacktestResultDefaults`, `TestDefaultCfg`, `TestMergeCfg`) and Slice 3 universe aggregator (`TestRunUniverseBacktest`) test classes added on top of the Sprint 3 baseline.
+
+### Outstanding drift (flagged, not auto-fixed in this iteration)
+- `numpy` pin drift: `requirements.txt` pins `numpy==2.2.4` but the active venv holds `numpy==2.5.0`. Newer minor; compatible. Recommend bumping the pin to actually-installed `numpy==2.5.0` in a follow-up sprint.
+- `vectorbt` pin misalignment: `requirements.txt` pins `vectorbt==1.1.0` but the package is **not installed** in the venv at all (last `pip list` shows no vectorbt). If the project means to use vectorbt, pin to the actually-installed version; otherwise drop the pin. Recommend a 5-minute cleanup task.
+- `pandas` and `TA-Lib` pins are matching the venv (`pandas==3.0.3`, `TA-Lib==0.7.0`).
+
+---
+
+*Questo fix plan è stato generato dalla code review del 2026-07-06. Da aggiornare man mano che i fix vengono applicati. Reconciliation TA-Lib aggiunta il 2026-07-07.*
