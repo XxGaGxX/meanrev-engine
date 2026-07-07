@@ -61,3 +61,6 @@ Thumbs.db
 
 # ─── Alpaca / broker SDK caches (if any) ──────────────────────
 alpaca_sdk_cache/
+
+# ─── Git worktrees ───────────────────────────────────────────
+.worktrees/
