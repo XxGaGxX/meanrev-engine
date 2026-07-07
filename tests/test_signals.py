@@ -30,6 +30,8 @@ def _make_df(n: int = 100, seed: int = 42) -> pd.DataFrame:
     df["regime_ok"] = rng.choice([True, False], n, p=[0.6, 0.4])
     df["atr"] = rng.uniform(0.5, 2.0, n)
     df["adx"] = rng.uniform(10, 30, n)
+    df["hurst"] = rng.uniform(0.2, 0.8, n)
+    df["hurst_fast"] = rng.uniform(0.2, 0.8, n)
 
     return df
 
@@ -131,6 +133,69 @@ class TestEntrySignals:
         df["signal_long"] = False
         df["signal_short"] = False
         assert not validate_signal_count(df, min_signals=1)
+
+    # ── Sprint 4: Entry soft scoring ────────────────────────────
+
+    def test_entry_scoring_columns_present_with_soft_scoring(self):
+        """When soft_scoring=True, entry_score and component scores appear."""
+        from filters.regime import apply_regime_filter
+        df = _make_df()
+        df = apply_regime_filter(df, adx_threshold=30, hurst_threshold=0.6)
+        df = generate_entry_signals(df, cfg={"soft_scoring": True})
+        for col in ("entry_score", "rsi_score", "bb_score",
+                     "zscore_score", "regime_score_entry"):
+            assert col in df.columns, f"missing: {col}"
+
+    def test_soft_scoring_produces_signals_when_binary_and_would_not(self):
+        """A bar with excellent RSI+BB+z-score but regime_ok=False
+        can fire with soft scoring (compensation) but never with binary AND."""
+        from filters.regime import apply_regime_filter
+        df = _make_df()
+        df = apply_regime_filter(df, adx_threshold=30, hurst_threshold=0.6)
+        # Force regime_ok=False for ALL bars
+        df["regime_ok"] = False
+        # But set strong entry conditions
+        df["rsi"] = 25.0        # oversold
+        df["zscore"] = -2.5     # extreme
+        df["close"] = df["bb_lower"] - 1.0  # below lower
+        df["vol_confirm"] = True
+        # Binary AND: 0 signals (regime_ok=False blocks everything)
+        df_bin = generate_entry_signals(df.copy(), cfg={"soft_scoring": False})
+        assert df_bin["signal_long"].sum() == 0
+        # Soft scoring with low entry_threshold: should fire
+        df_soft = generate_entry_signals(df.copy(), cfg={
+            "soft_scoring": True,
+            "entry_score_threshold": 0.40,
+            "score_regime_weight": 0.10,
+        })
+        assert df_soft["signal_long"].sum() > 0, (
+            "soft scoring should fire when RSI/BB/z score compensate for regime"
+        )
+
+    def test_soft_scoring_respects_direction(self):
+        """A bar with strong RSI oversold fires LONG, not SHORT."""
+        from filters.regime import apply_regime_filter
+        df = _make_df(n=30)
+        df = apply_regime_filter(df, adx_threshold=30, hurst_threshold=0.6)
+        df["rsi"] = 25.0       # oversold -> long signal
+        df["zscore"] = -2.5    # negative -> long
+        df_soft = generate_entry_signals(df, cfg={
+            "soft_scoring": True,
+            "entry_score_threshold": 0.40,
+        })
+        assert df_soft["signal_long"].iloc[-1], "long should fire on oversold + negative z"
+        assert not df_soft["signal_short"].iloc[-1], "short should NOT fire on oversold"
+
+    def test_binary_and_still_works_when_soft_scoring_false(self):
+        """Backward compat: soft_scoring=False uses original AND logic."""
+        from filters.regime import apply_regime_filter
+        df = _make_df()
+        df = apply_regime_filter(df, adx_threshold=30, hurst_threshold=0.6)
+        df_bin = generate_entry_signals(df.copy(), cfg={"soft_scoring": False})
+        df_def = generate_entry_signals(df.copy())
+        # Default (None) should match explicit False
+        assert (df_bin["signal_long"] == df_def["signal_long"]).all()
+        assert (df_bin["signal_short"] == df_def["signal_short"]).all()
 
 
 class TestExitSimulation:

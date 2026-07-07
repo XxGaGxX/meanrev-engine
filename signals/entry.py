@@ -69,32 +69,96 @@ def generate_entry_signals(
     overbought = cfg.get("overbought", 70)
     z_threshold = cfg.get("z_threshold", 2.0)
     use_volume = cfg.get("use_volume_confirm", True)
+    soft = cfg.get("soft_scoring", False)
 
     df = df.copy()
 
-    # Long entry: oversold + below lower BB + zscore < -threshold + volume + regime
-    long_cond = (
-        df["regime_ok"]
-        & (df["rsi"] < oversold)
-        & (df["close"] < df["bb_lower"])
-        & (df["zscore"] < -z_threshold)
-    )
-    if use_volume:
-        long_cond = long_cond & df["vol_confirm"]
+    # ── Soft scoring columns (Sprint 4) ──────────────────────────
+    if soft:
+        w_regime = cfg.get("score_regime_weight", 0.30)
+        w_rsi = cfg.get("score_rsi_weight", 0.15)
+        w_bb = cfg.get("score_bb_weight", 0.15)
+        w_z = cfg.get("score_z_weight", 0.25)
+        w_vol = cfg.get("score_vol_weight", 0.15)
 
-    # Short entry: overbought + above upper BB + zscore > threshold + volume + regime
-    short_cond = (
-        df["regime_ok"]
-        & (df["rsi"] > overbought)
-        & (df["close"] > df["bb_upper"])
-        & (df["zscore"] > z_threshold)
-    )
-    if use_volume:
-        short_cond = short_cond & df["vol_confirm"]
+        # regime_score_entry: binary, 1.0 if regime ok
+        df["regime_score_entry"] = df["regime_ok"].astype(float)
 
-    # Explicitly treat NaN as False so signals never fire on missing data
-    df["signal_long"] = long_cond.fillna(False)
-    df["signal_short"] = short_cond.fillna(False)
+        # RSI: extreme values → high score (mean reversion = enter at extremes)
+        rsi_center = 50.0
+        rsi_distance = 30.0  # RSI 20-80 range; RSI=30 gives |30-50|/30=0.67, RSI=20 gives 1.0
+        df["rsi_score"] = (
+            np.abs(df["rsi"] - rsi_center) / rsi_distance
+        ).clip(0.0, 1.0)
+
+        # BB deviation: price at or beyond bands → high score
+        bb_range = df["bb_upper"] - df["bb_lower"]
+        bb_deviation = np.maximum(
+            (df["bb_upper"] - df["close"]) / bb_range.replace(0, np.nan),
+            (df["close"] - df["bb_lower"]) / bb_range.replace(0, np.nan),
+        )
+        # BB: price at bands → score 1.0; midpoint → score 0.0
+        df["bb_score"] = (
+            (bb_deviation - 0.5) * 2.0
+        ).clip(0.0, 1.0).fillna(0.0)
+
+        # Z-score: |z| large → high score
+        z_threshold_score = cfg.get("z_threshold", 2.0)
+        df["zscore_score"] = (
+            np.abs(df["zscore"]) / z_threshold_score
+        ).clip(0.0, 1.0)
+
+        # Volume: binary, 1.0 if confirming, neutral 0.5 when disabled
+        if use_volume:
+            df["vol_score"] = df["vol_confirm"].astype(float)
+        else:
+            df["vol_score"] = pd.Series(0.5, index=df.index)
+
+        # Weighted entry score
+        df["entry_score"] = (
+            w_regime * df["regime_score_entry"]
+            + w_rsi * df["rsi_score"]
+            + w_bb * df["bb_score"]
+            + w_z * df["zscore_score"]
+            + w_vol * df["vol_score"]
+        )
+
+    # ── Signal gating ────────────────────────────────────────────
+    if soft:
+        entry_threshold = cfg.get("entry_score_threshold", 0.50)
+
+        # Directional checks
+        long_dir = (df["rsi"] < oversold) & (df["zscore"] < 0)
+        short_dir = (df["rsi"] > overbought) & (df["zscore"] > 0)
+
+        df["signal_long"] = (
+            (df["entry_score"] >= entry_threshold) & long_dir
+        ).fillna(False)
+        df["signal_short"] = (
+            (df["entry_score"] >= entry_threshold) & short_dir
+        ).fillna(False)
+    else:
+        # ── Original binary AND logic (unchanged) ────────────
+        long_cond = (
+            df["regime_ok"]
+            & (df["rsi"] < oversold)
+            & (df["close"] < df["bb_lower"])
+            & (df["zscore"] < -z_threshold)
+        )
+        if use_volume:
+            long_cond = long_cond & df["vol_confirm"]
+
+        short_cond = (
+            df["regime_ok"]
+            & (df["rsi"] > overbought)
+            & (df["close"] > df["bb_upper"])
+            & (df["zscore"] > z_threshold)
+        )
+        if use_volume:
+            short_cond = short_cond & df["vol_confirm"]
+
+        df["signal_long"] = long_cond.fillna(False)
+        df["signal_short"] = short_cond.fillna(False)
 
     return df
 

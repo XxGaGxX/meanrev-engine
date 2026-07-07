@@ -289,6 +289,25 @@ def _print_win_loss_comparison(
         f"{str((l_dir == 1).sum()) + 'L/' + str((l_dir == -1).sum()) + 'S':<22}"
     )
 
+    # Entry score row (Sprint 4: soft entry scoring)
+    if "entry_score" in df.columns:
+        w_entry = [
+            float(df["entry_score"].iloc[int(t["entry_idx"])])
+            for _, t in winners.iterrows()
+            if int(t["entry_idx"]) < len(df)
+            and not pd.isna(df["entry_score"].iloc[int(t["entry_idx"])])
+        ]
+        l_entry = [
+            float(df["entry_score"].iloc[int(t["entry_idx"])])
+            for _, t in losers.iterrows()
+            if int(t["entry_idx"]) < len(df)
+            and not pd.isna(df["entry_score"].iloc[int(t["entry_idx"])])
+        ]
+        print(
+            f"{'Entry score':<18} {_fmt(w_entry, '.3f'):<22} "
+            f"{_fmt(l_entry, '.3f'):<22}"
+        )
+
 
 # ── Main ────────────────────────────────────────────────────────────────
 

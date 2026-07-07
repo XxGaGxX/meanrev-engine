@@ -74,6 +74,14 @@ entry_signal:
   use_volume_confirm: true
   use_price_action: false          # Optional: pin bar / hammer confirmation
   min_signals_per_asset: 30        # Min signals for statistical validity
+  # ── Soft scoring (Sprint 4) ──────────────────────────────
+  soft_scoring: false
+  entry_score_threshold: 0.50
+  score_regime_weight: 0.30        # regime_ok: 30%
+  score_rsi_weight: 0.15           # RSI extreme: 15%
+  score_bb_weight: 0.15            # BB band touch: 15%
+  score_z_weight: 0.25             # z-score extreme: 25%
+  score_vol_weight: 0.15           # volume confirm: 15%
 
 # ───────────────────────────────────────────────
 # EXIT MANAGEMENT (Level 3)
