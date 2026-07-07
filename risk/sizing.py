@@ -399,7 +399,30 @@ def build_equity_curve(
     pd.Series
         Indexed by the exit timestamp of each trade (plus one initial bar),
         values in dollars.
+
+        If ``df`` is completely empty (the indicator pipeline emitted
+        zero rows), returns a 1-element Series anchored at ``pd.NaT``
+        containing ``initial_equity``. The single-element shape keeps
+        downstream ``utils/metrics.calculate_all_metrics`` honest:
+        ``max_drawdown`` on a 1-element Series resolves to 0.0 (no
+        drawdown observed) instead of returning NaN as it would on a
+        truly empty Series. A fully-empty Series would also defeat the
+        contract documented above that callers can ``iloc[-1]`` the
+        initial bar.
     """
+    # Defense-in-depth guard: the very first line of the body does
+    # ``df.index[0]`` which raises IndexError on an empty DatetimeIndex.
+    # Pre-fix this path crashed when the entire input was zero-volume or
+    # otherwise filtered out by ``data.clean.clean_data``. Returning a
+    # 1-element NaT Series preserves the dataclass contract that
+    # ``result.equity`` always has ≥1 element, so downstream metrics and
+    # callers can rely on it without special-casing.
+    if df.empty:
+        return pd.Series(
+            [float(initial_equity)],
+            index=pd.DatetimeIndex([pd.NaT]),
+            name="equity",
+        )
     timestamps: List[pd.Timestamp] = [df.index[0]]
     equity: List[float] = [float(initial_equity)]
 
@@ -442,7 +465,25 @@ def build_pct_curve(
     pd.Series
         Indexed by ``df.index[0]`` followed by the exit timestamp of each
         trade. Values are dollar equity, starting at ``initial_equity``.
+
+        If ``df`` is completely empty, returns a 1-element Series
+        anchored at ``pd.NaT`` containing ``initial_equity``. See
+        :func:`build_equity_curve` for the contract rationale — the
+        NaT-anchored single-element shape is mirrored here so Sized vs
+        Naive overlays plot on the same x-axis baseline in the
+        ``visual_check_sizing`` smoke test even when the engine fully
+        empties rows out.
     """
+    # Mirror guard of ``build_equity_curve`` (comment there explains why
+    # the NaT-anchored single-element shape was chosen over a truly empty
+    # Series). Without this, the engine would also IndexError on
+    # ``df.index[0]`` for fully-empty input through this helper.
+    if df.empty:
+        return pd.Series(
+            [float(initial_equity)],
+            index=pd.DatetimeIndex([pd.NaT]),
+            name="equity_naive",
+        )
     timestamps: List[pd.Timestamp] = [df.index[0]]
     equity: List[float] = [float(initial_equity)]
 

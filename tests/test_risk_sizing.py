@@ -415,6 +415,29 @@ class TestBuildEquityCurve:
         ec = build_equity_curve(sized, df, initial_equity=10_000.0)
         assert ec.iloc[-1] == pytest.approx(sized["equity_after"].iloc[-1], rel=1e-9)
 
+    def test_empty_df_returns_one_element_nat_anchored_series(self):
+        # Regression test pinning the empty-df guard. Before the fix
+        # this crashed with ``IndexError: index 0 is out of bounds`` on
+        # ``df.index[0]`` because the body unconditionally indexed before
+        # the empty-trades guard. The chosen contract: 1-element Series
+        # at ``pd.NaT`` containing ``initial_equity`` so downstream
+        # metrics stay honest (``max_drawdown`` returns 0.0 rather than
+        # NaN as it would on a truly empty Series) and callers can
+        # continue to call ``.iloc[-1]`` for the initial-bar value.
+        df_empty = pd.DataFrame(columns=["atr"])
+        trades_empty = pd.DataFrame(columns=[
+            "entry_idx", "exit_idx", "entry_price", "exit_price",
+            "direction", "pnl_pct",
+        ])
+        ec = build_equity_curve(
+            trades_empty, df_empty, initial_equity=15_000.0,
+        )
+        assert len(ec) == 1
+        assert float(ec.iloc[0]) == 15_000.0
+        assert pd.isna(ec.index[0])
+        assert isinstance(ec.index, pd.DatetimeIndex)
+        assert ec.name == "equity"
+
 
 # ─────────────────────────────────────────────────────────────────────
 # build_pct_curve — legacy equal-weight naive comparison helper
@@ -589,3 +612,35 @@ class TestBuildPctCurve:
         assert ec2.index[0] == df.index[0]
         assert ec2.name == "equity_naive"
         assert float(ec2.iloc[0]) == 10_000.0
+
+    def test_empty_df_returns_one_element_nat_anchored_series(self):
+        # Mirror defense-in-depth contract to ``build_equity_curve``:
+        # a fully-empty ``df`` produces a 1-element Series anchored at
+        # ``pd.NaT`` so Sized vs Naive overlays still plot on the same
+        # x-axis baseline in ``visual_check_sizing`` when the engine
+        # fully emits rows out (e.g., all-zero-volume input) — the
+        # caller-facing contract becomes uniform across both helpers.
+        df_empty = pd.DataFrame(columns=["atr"])
+        ec = build_pct_curve(None, df_empty, initial_equity=12_500.0)
+        assert len(ec) == 1
+        assert float(ec.iloc[0]) == 12_500.0
+        assert pd.isna(ec.index[0])
+        assert isinstance(ec.index, pd.DatetimeIndex)
+        assert ec.name == "equity_naive"
+        # Empty trades also produces the same contract — confirms the
+        # two early-return branches (empty df, empty trades) yield
+        # internally consistent shapes for the Sized helper.
+        trades_empty = pd.DataFrame(columns=[
+            "entry_idx", "exit_idx", "entry_price", "exit_price",
+            "direction", "pnl_pct",
+        ])
+        ec_from_trades = build_pct_curve(
+            trades_empty, df_empty, initial_equity=12_500.0,
+        )
+        # Use pd.isna for the index comparison: ``NaT == NaT`` returns
+        # False (pandas treats NaT analogously to NaN), so the
+        # equality form would fail even when both timestamps are the
+        # intended sentinel.
+        assert pd.isna(ec_from_trades.index[0])
+        assert pd.isna(ec.index[0])
+        assert float(ec_from_trades.iloc[0]) == float(ec.iloc[0])
