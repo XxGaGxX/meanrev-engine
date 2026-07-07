@@ -446,13 +446,23 @@ data:
 
 | Fase | Modulo Mancante | Impatto |
 |------|-----------------|---------|
-| FASE 3 | `risk/sizing.py` — Position sizing + Kelly | Nessun risk management |
+| ~~FASE 3~~ | ~~`risk/sizing.py` — Position sizing + Kelly~~ | ✅ COMPLETATA |
 | FASE 4 | `backtest/engine.py` — Motore Backtrader | Nessun backtest |
 | FASE 5 | `backtest/walk_forward.py` — Walk-Forward Analysis | Validazione anti-overfitting |
 | FASE 6 | `backtest/monte_carlo.py` — Monte Carlo Simulation | Stima drawdown realistica |
 | FASE 7 | `live/paper.py` — Paper Trading | Validazione live |
 
-**Raccomandazione:** Procedere con FASE 3 (Position Sizing) e FASE 4 (Backtest Engine).
+**Raccomandazione:** Procedere con FASE 4 (Backtest Engine).
+
+### ✅ FASE 3 — Position Sizing COMPLETATA
+- `risk/sizing.py` con `calculate_shares`, `kelly_risk_pct`, `apply_position_sizing`, `build_equity_curve`
+- Formula volatility-targeted: `shares = (equity × risk% / 100) / (ATR × atr_multiplier)`
+- Kelly frazionato opzionale cappato a `risk_cap_pct` (2%)
+- Guard rail: zero size su input non finiti / equity ≤ 0 / ATR ≤ 0
+- Slippage e commissioni applicate in `apply_position_sizing` (sustituiscono la curva equal-weight del demo)
+- `signals/exit.py` resta puro e backward-compatible con i 25 test esistenti
+- `scripts/demo_e2e.py::build_equity_curve` ora delega a `risk.sizing.build_equity_curve`
+- 25 nuovi test in `tests/test_risk_sizing.py` (formula, cap, share rounding, Kelly, slippage, commission)
 
 ---
 

@@ -33,11 +33,21 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from utils.config import config
-from utils.metrics import calculate_all_metrics, print_metrics, kelly_criterion
+from utils.metrics import (
+    calculate_all_metrics,
+    kelly_criterion,
+    max_drawdown,
+    print_metrics,
+)
 
 from data.clean import clean_data, filter_session_hours
 from filters.regime import apply_regime_filter
 from indicators.pipeline import build_all_indicators
+from risk.sizing import (
+    apply_position_sizing,
+    build_equity_curve,
+    build_pct_curve,
+)
 from signals.entry import generate_entry_signals, signal_counts
 from signals.exit import simulate_all_trades, exit_reason_stats
 
@@ -149,19 +159,31 @@ def run_pipeline(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     trades = simulate_all_trades(df, cfg=exit_cfg)
     print(f"  → {len(trades)} trades simulated")
 
+    step("Apply risk-based position sizing (FASE 3)")
+    initial_equity = float(config.get("account.equity", 10_000))
+    risk_cfg = {
+        "risk_per_trade_pct": config.get("risk.risk_per_trade_pct", 1.0),
+        "max_risk_per_trade_pct": config.get("risk.max_risk_per_trade_pct", 2.0),
+        "atr_multiplier": exit_cfg["atr_multiplier"],
+        "allow_fractional": True,
+        "max_position_pct": 1.0,
+        "kelly_fraction": config.get("risk.kelly_fraction", 0.0),
+        "commission_per_side": config.get("backtest.commission_per_side", 0.0),
+        "slippage_pct": config.get("backtest.slippage_pct", 0.0005),
+    }
+    trades = apply_position_sizing(
+        trades, df, initial_equity=initial_equity, risk_cfg=risk_cfg
+    )
+    if not trades.empty:
+        avg_shares = trades["shares"].mean()
+        avg_pnl = trades["pnl_dollar"].mean()
+        print(
+            f"  → avg shares/trade: {avg_shares:.2f} • "
+            f"avg $ P&L/trade: {avg_pnl:.2f} • "
+            f"final equity: {trades['equity_after'].iloc[-1]:.2f}"
+        )
+
     return df, trades
-
-
-def build_equity_curve(trades: pd.DataFrame, df: pd.DataFrame, initial: float = 10_000.0) -> pd.Series:
-    """Build a simple equity curve assuming equal-sized positions."""
-    equity = [initial]
-    timestamps = [df.index[0]]
-    for _, t in trades.iterrows():
-        equity.append(equity[-1] * (1 + t["pnl_pct"]))
-        # Map exit_idx to actual timestamp
-        idx_pos = min(int(t["exit_idx"]), len(df) - 1)
-        timestamps.append(df.index[idx_pos])
-    return pd.Series(equity, index=timestamps, name="equity")
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -211,20 +233,60 @@ def plot_results(df: pd.DataFrame, trades: pd.DataFrame, symbol: str) -> str:
     axes[1].set_ylabel("Indicator")
     axes[1].legend(loc="upper left", fontsize=8)
 
-    # Panel 3: Trade P&L bars
+    # Panel 3: Trade P&L bars — prefer the cost-aware pnl_pct_slip when
+    # risk sizing was applied so the bars agree with Panel 4. Fall back
+    # to the raw exit-derived pnl_pct for un-sized trade logs.
     if not trades.empty:
-        # Map entry_idx / exit_idx to timestamps
         ts_entry = df.index.to_series().iloc[trades["entry_idx"].values].values
-        axes[2].bar(ts_entry, trades["pnl_pct"] * 100, width=0.8,
-                     color=["green" if p > 0 else "red" for p in trades["pnl_pct"]])
+        if "pnl_pct_slip" in trades.columns and trades["pnl_pct_slip"].notna().any():
+            pnl_col = trades["pnl_pct_slip"]
+            bar_label = "cost-aware"
+        else:
+            pnl_col = trades["pnl_pct"]
+            bar_label = "exit-derived"
+        axes[2].bar(ts_entry, pnl_col * 100, width=0.8,
+                     color=["green" if p > 0 else "red" for p in pnl_col])
     axes[2].axhline(0, color="black", lw=0.5)
-    axes[2].set_ylabel("Trade P&L (%)")
+    axes[2].set_ylabel(f"Trade P&L (% — {bar_label})")
 
-    # Panel 4: Equity curve
-    equity = build_equity_curve(trades, df)
-    axes[3].plot(equity.index, equity.values, color="navy", lw=1.2)
+    # Panel 4: Equity curve — overlay Sized vs Equal-weight Naive
+    # The divergence between the two curves is the visual proof that
+    # FASE 3 risk sizing changes the equity dynamics rather than just
+    # re-scaling a single normalized return curve.
+    sized = build_equity_curve(trades, df)
+    naive = build_pct_curve(trades, df)
+    initial = float(config.get("account.equity", 10_000))
+    axes[3].axhline(initial, color="grey", lw=0.5, ls=":", alpha=0.7, label=f"initial ({initial:,.0f})")
+    axes[3].plot(sized.index, sized.values, color="navy", lw=1.4,
+                  label="Sized (vol-targeted, FASE 3)")
+    if not trades.empty:
+        axes[3].plot(naive.index, naive.values, color="darkorange", lw=1.0, ls="--",
+                      label="Equal-weight naive (legacy)")
     axes[3].set_ylabel("Equity ($)")
     axes[3].set_xlabel("Date")
+    axes[3].legend(loc="lower right", fontsize=8)
+
+    # Inset legend of headline stats — the DD delta is the headline because
+    # FASE 3's whole reason to exist is making tail losses less catastrophic.
+    if not trades.empty:
+        sized_final = float(sized.iloc[-1])
+        naive_final = float(naive.iloc[-1])
+        sized_dd = float(max_drawdown(sized))
+        naive_dd = float(max_drawdown(naive))
+        dd_delta = sized_dd - naive_dd    # more negative = Sized more conservative
+        text = (
+            f"\u0394 max DD: {dd_delta * 100:+.2f}%   (Sized {sized_dd * 100:.2f}%  "
+            f"vs  Naive {naive_dd * 100:.2f}%)\n"
+            f"Sized  final: ${sized_final:,.0f}\n"
+            f"Naive  final: ${naive_final:,.0f}  "
+            f"(\u0394 ${sized_final - naive_final:+,.0f})"
+        )
+        axes[3].text(
+            0.02, 0.95, text, transform=axes[3].transAxes,
+            fontsize=8.5, va="top", family="monospace",
+            bbox=dict(boxstyle="round,pad=0.4", facecolor="white",
+                      edgecolor="grey", alpha=0.9),
+        )
 
     plt.tight_layout()
     out_path = out_dir / f"demo_{symbol}.png"
@@ -264,9 +326,15 @@ def main() -> int:
 
     # 3. Build equity curve + compute metrics
     step("Compute performance metrics")
-    initial = config.get("account.equity", 10_000)
-    equity = build_equity_curve(trades, df, initial=initial)
-    trade_returns = pd.Series([t["pnl_pct"] for _, t in trades.iterrows()])
+    initial = float(config.get("account.equity", 10_000))
+    equity = build_equity_curve(trades, df, initial_equity=initial)
+    # Prefer cost-aware returns if risk/sizing produced them; otherwise
+    # fall back to the raw exit-derived pct so the demo still runs on
+    # raw simulated trades without sizing.
+    if "pnl_pct_slip" in trades.columns and trades["pnl_pct_slip"].notna().any():
+        trade_returns = pd.Series(trades["pnl_pct_slip"].dropna().tolist())
+    else:
+        trade_returns = pd.Series([t["pnl_pct"] for _, t in trades.iterrows()])
     # Annual periods for 15-min bars (252 trading days × ~22 bars/day after skip)
     periods_per_year = config.get("timeframe.bars_per_year", 5544)
     metrics = calculate_all_metrics(trade_returns, equity, periods_per_year=periods_per_year)

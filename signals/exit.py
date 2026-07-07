@@ -27,6 +27,23 @@ _REQUIRED_COLS = {
 ExitResult = Dict[str, Any]
 
 
+# Public column schema for the trade log DataFrame produced by
+# simulate_all_trades. Other modules (e.g. risk.sizing.build_pct_curve and
+# the contract test in tests/test_risk_sizing.py) should import this
+# instead of hardcoding the column names — that way the schema can evolve
+# in one place.
+TRADE_LOG_COLUMNS: tuple = (
+    "entry_idx",
+    "exit_idx",
+    "entry_price",
+    "exit_price",
+    "direction",
+    "pnl_pct",
+    "bars_held",
+    "exit_reason",
+)
+
+
 def simulate_exit(
     df: pd.DataFrame,
     entry_idx: int,
