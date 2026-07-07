@@ -1,4 +1,0 @@
-pair,final_value,pnl_totale,return_pct,annual_return_pct,total_trades,win_rate,profit_factor,max_drawdown_pct,sharpe,commission_pct,slippage_pct,stop_loss_count,time_stop_count,adf_fail_count,use_kalman,allocation_pct
-MPC-PSX,99138.26,-861.74,-0.86,-0.13,6,83.33,0.58,2.31,-0.1675,0.01,0.02,0,0,1039,True,20.0
-KMI-WMB,100239.03,239.03,0.24,0.04,2,100.0,,0.19,-0.5588,0.01,0.02,0,0,1089,True,20.0
-CVX-CTRA,99155.73,-844.27,-0.84,-0.13,4,50.0,0.64,2.43,-0.1172,0.01,0.02,0,0,926,True,20.0
