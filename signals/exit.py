@@ -51,6 +51,9 @@ def simulate_exit(
     atr_multiplier: float = 1.5,
     max_bars: int = 25,
     adx_stop_threshold: float = 25.0,
+    tp_mode: str = "zscore",
+    tp_atr_target: float = 4.0,
+    regime_stop: bool = True,
 ) -> ExitResult:
     """
     Simulate a single trade from entry to first exit trigger.
@@ -97,6 +100,15 @@ def simulate_exit(
         Maximum bars from signal bar to hold the position (time stop).
     adx_stop_threshold : float
         ADX level that triggers regime stop exit.
+    tp_mode : str
+        Take-profit mode: ``"zscore"`` (default), ``"atr_target"``, or ``"none"``.
+    tp_atr_target : float
+        ATR multiplier for the ``"atr_target"`` take-profit distance.
+    regime_stop : bool
+        When ``True`` (default), the regime-stop condition (``adx >
+        adx_stop_threshold`` or ``not regime_ok``) is checked at every
+        bar. Set ``False`` for momentum strategies where high ADX is
+        expected and not a reason to exit.
 
     Returns
     -------
@@ -228,18 +240,44 @@ def simulate_exit(
                 entry_idx, i, entry_price, sl_price, direction, "sl"
             )
 
-        # 3. Take Profit: z-score reverts to 0 on this bar's close.
-        if direction == 1 and z >= 0:
-            return _build_result(
-                entry_idx, i, entry_price, close, direction, "tp"
+        # 3. Take Profit: mode-dependent.
+        # - tp_mode="zscore" (default): mean-reversion TP — the original
+        #   zscore revert to 0 behavior. Suitable only for mean-reversion.
+        # - tp_mode="atr_target": fixed profit target at +N*ATR from entry.
+        #   The trigger price is the entry price + signal_atr * tp_atr_target
+        #   for longs (- that for shorts). The intra-bar check is matched on
+        #   bar.high/low so we fill at the target price (no gap-fill).
+        # - tp_mode="none": no TP; let winners run until SL/time/regime exits.
+        if tp_mode == "zscore":
+            if direction == 1 and z >= 0:
+                return _build_result(
+                    entry_idx, i, entry_price, close, direction, "tp"
+                )
+            if direction == -1 and z <= 0:
+                return _build_result(
+                    entry_idx, i, entry_price, close, direction, "tp"
+                )
+        elif tp_mode == "atr_target":
+            target_distance = signal_atr * tp_atr_target
+            target_price = (
+                entry_price + target_distance
+                if direction == 1
+                else entry_price - target_distance
             )
-        if direction == -1 and z <= 0:
-            return _build_result(
-                entry_idx, i, entry_price, close, direction, "tp"
-            )
+            if direction == 1 and high >= target_price:
+                return _build_result(
+                    entry_idx, i, entry_price, target_price, direction, "tp"
+                )
+            if direction == -1 and low <= target_price:
+                return _build_result(
+                    entry_idx, i, entry_price, target_price, direction, "tp"
+                )
+        # tp_mode == "none": no TP trigger; relies on SL/time/regime only.
 
         # 4. Regime Stop: ADX > threshold or regime breaks mid-trade.
-        if adx > adx_stop_threshold or not regime_ok:
+        #    When ``regime_stop=False`` (e.g. momentum strategies), this
+        #    block is bypassed entirely — winners run until SL / time / TP.
+        if regime_stop and (adx > adx_stop_threshold or not regime_ok):
             return _build_result(
                 entry_idx, i, entry_price, close, direction, "regime"
             )
@@ -307,6 +345,18 @@ def simulate_all_trades(
     atr_multiplier = cfg.get("atr_multiplier", 1.5)
     max_bars = cfg.get("max_bars", 25)
     adx_stop_threshold = cfg.get("adx_stop_threshold", 25.0)
+    tp_mode = cfg.get("tp_mode", "zscore")
+    tp_atr_target = cfg.get("tp_atr_target", 4.0)
+    if tp_mode not in ("zscore", "atr_target", "none"):
+        raise ValueError(
+            f"tp_mode must be 'zscore', 'atr_target', or 'none', got {tp_mode!r}"
+        )
+    if tp_mode == "atr_target" and tp_atr_target <= 0:
+        raise ValueError(
+            f"tp_atr_target must be > 0 for tp_mode='atr_target', "
+            f"got {tp_atr_target!r}"
+        )
+    regime_stop = bool(cfg.get("regime_stop", True))
 
     # Get integer positions directly (much faster than index→position conversion)
     long_positions = np.where(df["signal_long"].values)[0].tolist()
@@ -335,6 +385,9 @@ def simulate_all_trades(
             atr_multiplier=atr_multiplier,
             max_bars=max_bars,
             adx_stop_threshold=adx_stop_threshold,
+            tp_mode=tp_mode,
+            tp_atr_target=tp_atr_target,
+            regime_stop=regime_stop,
         )
         trades.append(result)
         last_exit_pos = result["exit_idx"]

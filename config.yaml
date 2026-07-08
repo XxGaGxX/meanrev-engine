@@ -126,6 +126,30 @@ backtest:
   slippage_pct: 0.0005            # 0.05% slippage (conservative estimate)
 
 # ───────────────────────────────────────────────
+# ENGINE — STRATEGY ROUTER
+# ───────────────────────────────────────────────
+engine:
+  strategy_type: "mean_reversion"  # mean_reversion | momentum
+
+# ───────────────────────────────────────────────
+# MOMENTUM ENTRY (used when engine.strategy_type=momentum)
+# All momentum-related config in one block: entry signals and
+# the exit overrides that distinguish momentum from mean-reversion.
+# ───────────────────────────────────────────────
+momentum_entry:
+  breakout_lookback: 20      # N-bar Donchian channel for high/low breakout
+  adx_min: 25.0              # ADX threshold (trending regime)
+  use_volume_confirm: true   # Require vol_confirm=True at trigger bar
+  direction_mode: long_only  # long_only | both
+  # Exit overrides applied under strategy_type=momentum (compose into
+  # the exit block at engine level):
+  atr_multiplier: 2.0        # SL distance (wider vs MR's 1.5)
+  max_bars: 25               # Time stop (longer than MR's 12)
+  adx_stop_threshold: 20.0   # Regime stop (lower than MR's 25; momentum dies)
+  tp_mode: none              # zscore | atr_target | none
+  tp_atr_target: 4.0         # Target ATR (used only if tp_mode=atr_target)
+
+# ───────────────────────────────────────────────
 # WALK-FORWARD ANALYSIS
 # ───────────────────────────────────────────────
 walk_forward:

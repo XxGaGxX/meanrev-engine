@@ -58,6 +58,7 @@ from risk.sizing import (
 )
 from signals.entry import generate_entry_signals, signal_counts
 from signals.exit import simulate_all_trades
+from signals.momentum_entry import generate_momentum_entry_signals
 from utils.config import config
 from utils.metrics import calculate_all_metrics
 
@@ -158,6 +159,8 @@ def _default_cfg() -> Dict[str, Any]:
             "market_close": config.get("timeframe.market_close", "16:00"),
             "bars_per_year": config.get("timeframe.bars_per_year", _DEFAULT_BARS_PER_YEAR),
         },
+        "engine": dict(raw.get("engine") or {}),
+        "momentum_entry": dict(raw.get("momentum_entry") or {}),
     }
 
 
@@ -261,14 +264,54 @@ def run_backtest(
     df = build_all_indicators(df, cfg=cfg_merged["indicators"])
 
     # --- 3. Regime filter ---
-    df = apply_regime_filter(df, **cfg_merged["regime_filter"])
+    engine_cfg = cfg_merged.get("engine") or {}
+    strategy_type = engine_cfg.get("strategy_type", "mean_reversion")
+    if strategy_type == "mean_reversion":
+        df = apply_regime_filter(df, **cfg_merged["regime_filter"])
+    else:
+        # Momentum doesn't need the regime gate, but downstream exit
+        # simulation requires ``regime_ok`` as a schema column. When
+        # ``regime_stop=False`` (the momentum default), the column is
+        # never actually read — it just satisfies the schema contract.
+        df = df.copy()
+        df["regime_ok"] = True
 
-    # --- 4. Entry signals ---
-    df = generate_entry_signals(df, cfg=cfg_merged["entry_signal"])
+    # --- 4. Entry signals (routed by engine.strategy_type) ---
+    if strategy_type == "momentum":
+        mcfg = dict(cfg_merged.get("momentum_entry") or {})
+        df = generate_momentum_entry_signals(df, cfg=mcfg)
+    else:
+        # Default: mean-reversion (existing pipeline unchanged).
+        if strategy_type != "mean_reversion":
+            # Tolerated by ``_merge_cfg`` (unknown leaves tolerated), but
+            # explicit here for the entry-router so a typo like
+            # "momementum" fails fast with a useful message instead of
+            # silently re-running the mean-reversion pipeline.
+            raise ValueError(
+                f"engine.strategy_type must be 'mean_reversion' or 'momentum', "
+                f"got {strategy_type!r}"
+            )
+        df = generate_entry_signals(df, cfg=cfg_merged["entry_signal"])
     sig_counts = signal_counts(df)
 
-    # --- 5. Exit simulation ---
-    trades = simulate_all_trades(df, cfg=cfg_merged["exit"])
+    # --- 5. Exit simulation (mean-reversion uses base cfg;
+    #        momentum overlays its own tp_mode + SL/time overrides). ---
+    exit_cfg = dict(cfg_merged["exit"])
+    if strategy_type == "momentum":
+        mcfg = cfg_merged.get("momentum_entry") or {}
+        # Momentum-friendly exit config: no zscore TP (let winners run),
+        # wider SL, longer time stop, lenient regime-stop ADX.
+        exit_cfg["atr_multiplier"] = mcfg.get("atr_multiplier", exit_cfg.get("atr_multiplier", 2.0))
+        exit_cfg["max_bars"] = mcfg.get("max_bars", exit_cfg.get("max_bars", 25))
+        exit_cfg["adx_stop_threshold"] = mcfg.get(
+            "adx_stop_threshold", exit_cfg.get("adx_stop_threshold", 20.0)
+        )
+        exit_cfg["tp_mode"] = mcfg.get("tp_mode", "none")
+        exit_cfg["tp_atr_target"] = mcfg.get("tp_atr_target", 4.0)
+        # Momentum stays in trades through trend; regime_stop kills
+        # winners prematurely in a trending ADX environment.
+        exit_cfg["regime_stop"] = mcfg.get("regime_stop", False)
+    trades = simulate_all_trades(df, cfg=exit_cfg)
 
     # --- 6. Position sizing ---
     exit_cfg = cfg_merged["exit"]

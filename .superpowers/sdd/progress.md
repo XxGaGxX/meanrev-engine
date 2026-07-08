@@ -1,41 +1,45 @@
 # SDD Progress Ledger
 
+## BRANCH B — Fix + Momentum Pilot (Sprint 1)         2026-07-07
+**Status:** DONE — Pilot executed, PF=1.06 vs MR PF=0.40
+**Branch:** `feature/path-2-validation-infra`
+**Base:** `f3550ef` (docs-only, analysis/)
+**Head:** (to be committed)
+**Tests:** 277/277 green (+1 regime_stop test vs 276 baseline)
+
+**Changes:**
+  - signals/exit.py: +regime_stop param (default True, backward compat),
+    +tp_atr_target<=0 validation, updated docstring
+  - signals/__init__.py: -momentum_signal_counts from exports (dead code)
+  - backtest/engine.py: top-level momentum import, strategy_type before
+    step 3, +engine +momentum_entry blocks in _default_cfg,
+    regime_stop=False for momentum, regime_ok=True stub for momentum
+  - tests/test_exit_tp_modes.py: adx_stop_threshold 25→40 (6 tests),
+    .loc[] chain-assignment fix (2 tests), +test_regime_stop_false_bypasses
+  - tests/test_momentum_entry.py: assertion tightened >=1→==1,
+    .loc[] chain-assignment fix for test_both_mode_emits_short_breakout
+  - scripts/run_momentum_12mo.py: Unicode fix, switched to
+    run_backtest_for_symbol (handles MultiIndex flattening)
+
+**Pilot result (SPY 2024-10..2025-09, 15-min):**
+  - 41 signals → 17 trades
+  - PF=1.06, Sharpe=0.17, win rate=41.18%, return=+0.27%
+  - Exit reasons: 7 time, 8 SL, 2 open_gap_sl
+  - Time-stop trades are the most profitable — momentum edge IS there
+    but execution (SL tightness) erodes it.
+  - Verdict: MARGINAL (PF>1.0 N<20) — extends to multi-symbol or daily
+    per NEXT_DEV_PLAN §4.
+
+---
+
 ## PATH 2: Validation Infrastructure — Sprint 1
-**Status:** In progress (pre-flight complete, branch opened, doc updated)
+**Status:** Abandoned — strategy structurally unviable (pivoted to BRANCH B)
 **Date:** 2026-07-07
-**Branch:** `feature/path-2-validation-infra` (NEW, opened from `master`)
+**Branch:** `feature/path-2-validation-infra`
 **Plan:** `PATH_2_VALIDATION_INFRASTRUCTURE_PLAN.md`
-**Design decisions (resolved 2026-07-07):**
-  - Branch: NEW `feature/path-2-validation-infra` (not continuation of feature/remediation-sprint-1)
-  - Timeframe-discretizzazione: tutti 15-min allineati (merge outer su timestamp)
-  - Mark-to-market: prezzo corrente posizioni aperte (price lookup continuo, curva MTM continua)
-  - Priority di selezione: FIFO cronologico
 
-**Sprint target:** 259 → 264 baseline (+5 unit-test), Portfolio backtest ship-ready con MTM.
-
-**Pre-requisites met:**
-  - Slice 3 `run_universe_backtest` ship-ready in `backtest/engine.py` (3 test verdi)
-  - 259/259 baseline test verde
-  - `config.yaml::walk_forward.*` (6mo train / 1mo test / min 4 finestre / 20% OOS degradation tolerance) pre-configurato
-  - `config.yaml::monte_carlo.*` (10k sims / percentili 5/50/95) pre-configurato
-
-**Sub-task tracking:**
-  - 1.1 — regime check: DONE — 2022-Q1Q3 produced 8 trades (all losing, PF=0.0, Sharpe=−1.98), 2023-Q2Q3 produced 0 trades; Strategy structurally unviable across all 5 tested historical regimes; see PATH_2_VALIDATION_INFRASTRUCTURE_PLAN §15
-  - 1.2 — `risk/portfolio.py` con `compute_unrealized_pnl` (no-touch su `risk/sizing.py`): BLOCKED — pending user decision on PATH 2 continuation vs pivot (options A/B/C in followups)
-  - 1.3 — `run_portfolio_backtest` + `PortfolioResult` con MTM equity + FIFO selection: BLOCKED (idem)
-  - 1.4 — `scripts/run_portfolio_12mo.py` E2E smoke + log: BLOCKED (idem)
-  - Tests — 5 nuovi (cap-3, shared equity, empty skip, skip_reasons, MTM current price): BLOCKED (idem)
-  - Code review — `code-reviewer-minimax-m3` su Sprint 1: BLOCKED (idem)
-
-**Aggregate finding (after Sprint 1.1):**
-
-La strategia mean-reversion intraday su SPY/QQQ/IWM ha prodotto:
-- 0-24 trade in 5 finestre storiche testate (Q4 2025, cross-val Q4 2023→2024, Step 1.6, bear 2022, range 2023)
-- regime_ok pass rate 6-9% in tutti i window (config min=8%)
-- PF<1.0 dove i trade hanno generato abbastanza dati per calcolarlo
-- Sharpe negativo o undefined
-
-→ Conferma quantitativa che la strategia ha un problema strutturale, non parametrico. PATH 2 prosegue validando l'infrastruttura; Cancellation Gate (§7 PATH_2 plan) atteso FAIL.
+**Sprint 1.1 result:** 0-24 trades in 5/5 historical regimes, PF<1.0.
+Mean-reversion structurally dead on SPY/QQQ/IWM 15-min.
 
 ---
 
