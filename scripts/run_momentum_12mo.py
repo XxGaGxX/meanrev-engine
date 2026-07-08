@@ -35,7 +35,6 @@ def main() -> int:
     print("Momentum (Donchian breakout) Backtest -- PATH 3 pilot")
     print("=" * 70)
     print(f"Symbol:        SPY")
-    print(f"Window:        {start.date()} -> {end.date()}")
     print(f"Strategy:      breakout_lookback=20, ADX>=25, mode=long_only")
     print(f"Exit:          SL=2xATR, time_stop=25 bars, regime_stop=OFF, tp_mode=none")
     print()
@@ -58,7 +57,11 @@ def main() -> int:
             "tp_atr_target": 4.0,
         },
     }, n_bars=n_bars)
-    print(f"Fetched {len(result.df)} 15-min bars")
+    df = result.df
+    window_start = df.index[0].date() if len(df) > 0 else "N/A"
+    window_end = df.index[-1].date() if len(df) > 0 else "N/A"
+    print(f"Window:        {window_start} -> {window_end}")
+    print(f"Bars:          {len(df)} (15-min)")
     print()
 
     print("=== Signals ===")
