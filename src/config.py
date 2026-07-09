@@ -1,0 +1,121 @@
+"""Typed configuration loader.
+
+Single source of truth: config/settings.yaml.
+NO hardcoded parameters anywhere else in the codebase — they all flow through
+this module. See docs/superpowers/plans/ROADMAP_MVP.md, Phase 0 gate.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# Default location shared by tests and runtime; overridable via load_settings().
+SETTINGS_PATH = PROJECT_ROOT / "config" / "settings.yaml"
+
+
+@dataclass(frozen=True)
+class StrategyConfig:
+    name: str
+    universe_size: int
+    gap_min_pct: float
+    gap_max_pct: float
+    opening_range_bars: int
+    confirmation_bars: int
+
+
+@dataclass(frozen=True)
+class DataConfig:
+    start_date: date
+    end_date: date
+    dev_end_date: date
+    cache_dir: str
+
+    def __post_init__(self) -> None:
+        # Roadmap requires temporal ordering and a 5y+ window.
+        if not (self.start_date < self.dev_end_date < self.end_date):
+            raise ValueError(
+                "data config: require start_date < dev_end_date < end_date; "
+                f"got {self.start_date} / {self.dev_end_date} / {self.end_date}"
+            )
+
+
+@dataclass(frozen=True)
+class ExecutionConfig:
+    broker: str
+    paper_trading: bool
+    forced_exit_time: str
+    risk_per_trade: float
+    initial_capital: float
+
+
+@dataclass(frozen=True)
+class Settings:
+    strategy: StrategyConfig
+    data: DataConfig
+    execution: ExecutionConfig
+
+
+def _coerce_date(value: Any, field: str) -> date:
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        return date.fromisoformat(value)
+    raise TypeError(f"{field}: expected ISO date string, got {type(value).__name__}")
+
+
+def load_settings(path: Path | None = None) -> Settings:
+    """Load and validate config/settings.yaml into a typed Settings object.
+
+    Raises FileNotFoundError if the path does not exist.
+    Raises ValueError/KeyError/TypeError on malformed config.
+    """
+    settings_path = path or SETTINGS_PATH
+    if not settings_path.is_file():
+        raise FileNotFoundError(f"settings file not found: {settings_path}")
+
+    with settings_path.open("r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f) or {}
+
+    try:
+        s = raw["strategy"]
+        d = raw["data"]
+        e = raw["execution"]
+    except KeyError as exc:
+        raise KeyError(f"settings.yaml missing required block: {exc}") from exc
+
+    data_cfg = DataConfig(
+        start_date=_coerce_date(d["start_date"], "data.start_date"),
+        end_date=_coerce_date(d["end_date"], "data.end_date"),
+        dev_end_date=_coerce_date(d["dev_end_date"], "data.dev_end_date"),
+        cache_dir=str(d["cache_dir"]),
+    )
+
+    strategy_cfg = StrategyConfig(
+        name=str(s["name"]),
+        universe_size=int(s["universe_size"]),
+        gap_min_pct=float(s["gap_min_pct"]),
+        gap_max_pct=float(s["gap_max_pct"]),
+        opening_range_bars=int(s["opening_range_bars"]),
+        confirmation_bars=int(s["confirmation_bars"]),
+    )
+
+    execution_cfg = ExecutionConfig(
+        broker=str(e["broker"]),
+        paper_trading=bool(e["paper_trading"]),
+        forced_exit_time=str(e["forced_exit_time"]),
+        risk_per_trade=float(e["risk_per_trade"]),
+        initial_capital=float(e["initial_capital"]),
+    )
+
+    return Settings(
+        strategy=strategy_cfg,
+        data=data_cfg,
+        execution=execution_cfg,
+    )
