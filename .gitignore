@@ -1,0 +1,14 @@
+# Secrets
+.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Venv
+.venv/
+
+# Local data cache
+data/cache/

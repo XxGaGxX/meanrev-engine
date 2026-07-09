@@ -1,0 +1,41 @@
+# ============================================================================
+# Gap Mean Reversion MVP — Single Source of Truth (config/settings.yaml)
+# ============================================================================
+# NO hardcoded params in Python code. Tutto qui dentro.
+# Se un parametro manca: aggiungerlo qui, MAI in src/*.py.
+# ============================================================================
+
+strategy:
+  # Identificativi (Phase 0)
+  name: "gap_mean_reversion_mvp"
+  universe_size: 80                 # ~80 large-cap USA liquidi per l'MVP (Phase 1)
+  gap_min_pct: 0.003                # 0.3% — soglia inferiore gap
+  gap_max_pct: 0.02                 # 2% — soglia superiore gap
+  opening_range_bars: 3             # 3 barre 5min = 15 min (Phase 3+)
+  confirmation_bars: 2              # 2 Close consecutivi (Phase 3+)
+
+# Periodo dati + split sviluppo / out-of-sample (Phase 1 + Fase 6)
+data:
+  start_date: "2019-01-01"
+  end_date:   "2024-12-31"
+  dev_end_date: "2022-12-31"        # ultimi 30% (2023-2024) → out-of-sample INTOCCATO
+  cache_dir: "data/cache"
+
+# Esecuzione (Phase 9+)
+execution:
+  broker: "alpaca"
+  paper_trading: true
+  forced_exit_time: "15:50"          # EST — pre-auction
+  risk_per_trade: 0.01              # 1% del capitale a rischio
+  initial_capital: 25000
+
+# Logging minimale (le rotazioni/config arriveranno in fasi successive)
+logging:
+  level: "INFO"
+
+# Decision gates (riferimento operativo, non enforcement automatico)
+gates:
+  eda_min_trades_per_cell: 30
+  backtest_oos_min_sharpe: 0.0
+  backtest_oos_min_profit_factor: 1.0
+  paper_trading_min_days: 15

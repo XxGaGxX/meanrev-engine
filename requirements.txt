@@ -1,0 +1,10 @@
+# ===== Free-only runtime deps (Phase 0) =====
+# MVP Path: solo API gratuite (yfinance + Alpaca paper + pandas-market-calendars)
+pandas>=2.0.0
+numpy>=1.24.0
+yfinance>=0.2.30
+pyyaml>=6.0
+python-dotenv>=1.0.0
+matplotlib>=3.7.0
+pytest>=7.4.0
+alpaca-py>=0.30.0
