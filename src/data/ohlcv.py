@@ -353,19 +353,32 @@ class OHLCVSchemaError(RuntimeError):
 def normalize_ohlcv_columns(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
     """Normalize a yfinance frame to a flat frame with a 'date' column.
 
-    Single-ticker yfinance download returns a flat-column frame indexed by
-    Date; multi-ticker code paths use MultiIndex columns. We:
-      1. Lowercase string columns.
-      2. Promote a 'Date'-named index or a 'datetime' column to `date`.
-      3. Raise OHLCVSchemaError if `date` is still missing.
+    Two schemas appear in practice from yfinance.download(...):
 
-    We deliberately do NOT guess by renaming the first column — a frame
-    whose first column is 'Open' (or whose objects carry no date metadata
-    at all) must fail loudly so the operator notices. Silent rename here
-    is exactly the failure mode that the OOS-isolation Phase 1 gate is
-    designed to prevent.
+      Schema A (current default — `auto_adjust=False`, single ticker):
+        columns = MultiIndex like [('Date', ''), ('Open', ''), ('Close', ''), ...]
+        index   = RangeIndex (or DatetimeIndex if reset_index not applied)
+
+      Schema B (older yfinance / multi-ticker code path):
+        columns = flat list ['Date', 'Open', ...] (no MultiIndex)
+        index   = DatetimeIndex named 'Date'
+
+    The helper handles both by:
+      1. reset_index() — promotes a named DatetimeIndex to a 'date' column.
+      2. Flatten any MultiIndex columns to first level ('Date', 'Open', ...).
+      3. Lowercase string columns.
+      4. Look for 'date'; promote 'datetime' if needed.
+      5. Raise OHLCVSchemaError if 'date' is still missing.
+
+    We deliberately do NOT guess by renaming an arbitrary column to 'date'
+    — a frame whose first column is 'Open' must fail loudly so the
+    operator notices. Silent rename here is exactly the failure mode the
+    OOS-isolation Phase 1 gate is designed to prevent.
     """
     df = df.reset_index()
+    # Schema A: flatten MultiIndex columns.
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
     df.columns = [c.lower() if isinstance(c, str) else c for c in df.columns]
     if "date" not in df.columns and "datetime" in df.columns:
         df = df.rename(columns={"datetime": "date"})

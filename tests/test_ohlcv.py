@@ -219,6 +219,44 @@ def test_normalize_ohlcv_columns_promotes_datetimeindex() -> None:
     assert "date" in out.columns
 
 
+def test_normalize_ohlcv_columns_flattens_multiindex_to_first_level() -> None:
+    """yfinance with auto_adjust=False returns MultiIndex columns even for
+    a single-ticker call. The first level is the field name ('Date',
+    'Open', 'Close', ...). Flatten it so 'Date' becomes 'date'.
+
+    Without this normalization, all 80 tickers fail with OHLCVSchemaError.
+    """
+    cols = pd.MultiIndex.from_tuples([
+        ("Date", ""),
+        ("Open", ""),
+        ("High", ""),
+        ("Low", ""),
+        ("Close", ""),
+        ("Adj Close", ""),
+        ("Volume", ""),
+    ])
+    n = 5
+    df = pd.DataFrame(
+        {
+            ("Date", ""): pd.date_range("2024-01-01", periods=n),
+            ("Open", ""): [100.0] * n,
+            ("High", ""): [101.0] * n,
+            ("Low", ""): [99.0] * n,
+            ("Close", ""): [100.5] * n,
+            ("Adj Close", ""): [100.5] * n,
+            ("Volume", ""): [1000] * n,
+        },
+        columns=cols,
+    )
+    out = normalize_ohlcv_columns(df, "AAPL")
+    assert "date" in out.columns
+    assert "open" in out.columns
+    assert "close" in out.columns
+    # All tuple-form is gone:
+    for c in out.columns:
+        assert not isinstance(c, tuple), f"column {c!r} is still a tuple"
+
+
 # ---------------------------------------------------------------------------
 # Manifest round-trip + OOS isolation flag
 # ---------------------------------------------------------------------------
