@@ -12,3 +12,6 @@ __pycache__/
 
 # Local data cache
 data/cache/
+
+# Superpowers subagent-driven-development scratch ledger (DO NOT COMMIT)
+.superpowers/sdd/

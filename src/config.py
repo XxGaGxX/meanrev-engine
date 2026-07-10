@@ -56,10 +56,22 @@ class ExecutionConfig:
 
 
 @dataclass(frozen=True)
+class GatesConfig:
+    """Decision thresholds lifted out of settings.yaml so the rest of the
+    code reads typed constants."""
+
+    eda_min_trades_per_cell: int
+    backtest_oos_min_sharpe: float
+    backtest_oos_min_profit_factor: float
+    paper_trading_min_days: int
+
+
+@dataclass(frozen=True)
 class Settings:
     strategy: StrategyConfig
     data: DataConfig
     execution: ExecutionConfig
+    gates: GatesConfig
 
 
 def _coerce_date(value: Any, field: str) -> date:
@@ -87,6 +99,7 @@ def load_settings(path: Path | None = None) -> Settings:
         s = raw["strategy"]
         d = raw["data"]
         e = raw["execution"]
+        g = raw["gates"]
     except KeyError as exc:
         raise KeyError(f"settings.yaml missing required block: {exc}") from exc
 
@@ -114,8 +127,16 @@ def load_settings(path: Path | None = None) -> Settings:
         initial_capital=float(e["initial_capital"]),
     )
 
+    gates_cfg = GatesConfig(
+        eda_min_trades_per_cell=int(g["eda_min_trades_per_cell"]),
+        backtest_oos_min_sharpe=float(g["backtest_oos_min_sharpe"]),
+        backtest_oos_min_profit_factor=float(g["backtest_oos_min_profit_factor"]),
+        paper_trading_min_days=int(g["paper_trading_min_days"]),
+    )
+
     return Settings(
         strategy=strategy_cfg,
         data=data_cfg,
         execution=execution_cfg,
+        gates=gates_cfg,
     )
