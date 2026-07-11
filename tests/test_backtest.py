@@ -133,3 +133,41 @@ def test_metrics_sharpe_zero_when_single() -> None:
     trades = [TradeResult(5.0, ExitReason.TP_FULL, 100.0, 2)]
     m = compute_metrics(trades)
     assert m.sharpe == 0.0  # single trade -> std undefined
+
+
+# --- Fase 5 gate: max drawdown + equity curve + anti-look-ahead ---
+
+
+def test_metrics_max_drawdown_and_equity_curve() -> None:
+    """compute_metrics must also return an equity curve and its max DD.
+    With initial_capital=100 and P&L +10,-4,+2 -> equity [110,106,108];
+    peak 110, trough 106 -> DD = 4/110 = 3.64%."""
+    trades = [
+        TradeResult(10.0, ExitReason.TP_FULL, 100.0, 3),
+        TradeResult(-4.0, ExitReason.SL, 99.2, 2),
+        TradeResult(2.0, ExitReason.TP_FULL, 100.0, 4),
+    ]
+    m = compute_metrics(trades, initial_capital=100.0)
+    assert m.equity_curve[-1] == pytest.approx(108.0)
+    assert m.max_drawdown == pytest.approx(4/110)
+    assert len(m.equity_curve) == 3
+
+
+def test_simulate_trade_records_timestamps() -> None:
+    """Fase 5 anti-look-ahead gate: TradeResult must carry the entry and
+    signal bar indices so the orchestrator can assert entry > signal."""
+    plan = _plan()
+    bars = _bars(99.9, 100.05, 100.2)
+    res = simulate_trade(plan, bars, entry_bar_index=5, signal_bar_index=4)
+    assert res.entry_bar_index == 5
+    assert res.signal_bar_index == 4
+    # anti-look-ahead invariant: entry strictly AFTER signal
+    assert res.entry_bar_index > res.signal_bar_index
+
+
+def test_simulate_trade_rejects_look_ahead() -> None:
+    """If entry is not after signal, the engine must refuse (gate fails)."""
+    plan = _plan()
+    bars = _bars(99.9, 100.05)
+    with pytest.raises(ValueError):
+        simulate_trade(plan, bars, entry_bar_index=3, signal_bar_index=5)

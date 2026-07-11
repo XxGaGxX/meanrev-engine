@@ -23,17 +23,22 @@ class Metrics:
     total_pnl: float
     sharpe: float
     avg_pnl: float
+    equity_curve: List[float]      # equity = initial_capital + cumsum(pnl)
+    max_drawdown: float            # max peak-to-trough decline (0..1+)
 
 
-def compute_metrics(trades: Sequence["object"]) -> Metrics:
+def compute_metrics(trades: Sequence["object"], initial_capital: float = 0.0) -> Metrics:
     """Aggregate a list of TradeResult into Metrics.
 
     trades: iterable of objects with a numeric `.pnl` attribute.
+    initial_capital: starting equity; the curve is capital + cumsum(pnl),
+        so max_drawdown is a real peak-to-trough % on equity (not on P&L
+        from zero, which is undefined when equity goes negative).
     """
     pnls = [float(t.pnl) for t in trades]
     n = len(pnls)
     if n == 0:
-        return Metrics(0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        return Metrics(0, 0.0, 0.0, 0.0, 0.0, 0.0, [initial_capital], 0.0)
 
     total = sum(pnls)
     wins = [p for p in pnls if p > 0]
@@ -55,6 +60,18 @@ def compute_metrics(trades: Sequence["object"]) -> Metrics:
     else:
         sharpe = 0.0
 
+    # Equity curve + max drawdown on capital (not P&L from zero)
+    equity: List[float] = []
+    peak = initial_capital
+    max_dd = 0.0
+    running = initial_capital
+    for p in pnls:
+        running += p
+        equity.append(running)
+        peak = max(peak, running)
+        dd = (peak - running) / peak if peak > 0 else 0.0
+        max_dd = max(max_dd, dd)
+
     return Metrics(
         n_trades=n,
         win_rate=win_rate,
@@ -62,4 +79,6 @@ def compute_metrics(trades: Sequence["object"]) -> Metrics:
         total_pnl=total,
         sharpe=sharpe,
         avg_pnl=avg,
+        equity_curve=equity,
+        max_drawdown=max_dd,
     )
