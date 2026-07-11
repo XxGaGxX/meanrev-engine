@@ -152,6 +152,7 @@ def compute_position(
     max_position_size: float,
     partial_tp_frac: float = 0.0,
     time_stop_bars: Optional[int] = None,
+    sl_atr_multiple: Optional[float] = None,
 ) -> PositionPlan:
     """Build a risk-bounded PositionPlan.
 
@@ -159,13 +160,18 @@ def compute_position(
         partial_tp_frac: 0 disables partial TP; (0,1] takes that fraction
             at the OR boundary.
         time_stop_bars: optional max bars in trade before forced exit.
+        sl_atr_multiple: if given, the SL is volatility-scaled
+            (entry - atr*mult for LONG / entry + atr*mult for SHORT)
+            INSTEAD of the (often wide) opening-range boundary. This caps
+            loss size so a few adverse gaps cannot produce outsized
+            losses that destroy profit factor. Recommended for live use.
 
     Returns:
         PositionPlan with integer share count.
 
     Raises:
-        ValueError: bad direction, non-positive capital/entry, or
-            partial_tp_frac outside [0,1].
+        ValueError: bad direction, non-positive capital/entry,
+            partial_tp_frac outside [0,1], or sl_atr_multiple <= 0.
     """
     if direction not in ("LONG", "SHORT"):
         raise ValueError(f"direction must be LONG/SHORT, got {direction!r}")
@@ -177,12 +183,20 @@ def compute_position(
         raise ValueError(f"partial_tp_frac must be in [0,1], got {partial_tp_frac!r}")
     if time_stop_bars is not None and time_stop_bars <= 0:
         raise ValueError(f"time_stop_bars must be positive, got {time_stop_bars!r}")
+    if sl_atr_multiple is not None and sl_atr_multiple <= 0:
+        raise ValueError(f"sl_atr_multiple must be positive, got {sl_atr_multiple!r}")
 
     is_long = direction == "LONG"
     dir_enum = Direction.LONG if is_long else Direction.SHORT
 
     # --- SL / TP per design doc §4.3 ---
-    sl_price = opening_range_low if is_long else opening_range_high
+    # Base SL uses the OR boundary. The ATR stop (quant fix) OVERRIDES it
+    # when provided, bounding the loss to volatility instead of the wide OR.
+    if sl_atr_multiple is not None and atr > 0:
+        sl_offset = atr * sl_atr_multiple
+        sl_price = entry_price - sl_offset if is_long else entry_price + sl_offset
+    else:
+        sl_price = opening_range_low if is_long else opening_range_high
     tp_price = prev_close
     # OR boundary used for the partial take-profit. Always populated so the
     # backtest / report can reason about it; whether it is USED is governed

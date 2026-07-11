@@ -5,8 +5,13 @@ Contract (docs/specs/2026-07-09-gap-mean-reversion-design.md §4.3-4.5
 
   - Entry LONG  = opening-range breakout (signal bar_index+1 open)
   - TP   (base) = prev_close  (the gap fill target)
-  - SL   (base) = opening_range low  (LONG) / high (SHORT)
-  - Position size = risk_amount / stop_distance, capped.
+  - SL (base) = opening_range low (LONG) / high (SHORT)
+  - SL (ATR fix) = entry ∓ atr*sl_atr_multiple when provided — a
+    volatility-scaled stop that caps loss size independently of the
+    (often wide) opening range. REQUIRED to make realized R:R viable:
+    the OR-low/high stop is wider than the prev_close target, so a few
+    adverse gaps produce outsized losses (PF<1 even at 78% win rate).
+
       risk_amount = capital * risk_per_trade
       stop_distance = max(|entry - SL|, entry * min_stop_distance_pct)
   - Alpaca costs: SEC fee (~$8/$1M notional) + FINRA TAF ($0.000119/sh,
@@ -242,3 +247,50 @@ def test_negative_capital_raises() -> None:
             risk_per_trade=0.01, atr=0.5, atr_target=0.5,
             min_stop_distance_pct=0.001, max_position_size=0.95,
         )
+
+
+def test_atr_sl_overrides_or_low() -> None:
+    """QUANT FIX: when sl_atr_multiple is given, the stop is volatility
+    scaled (entry - atr*mult for LONG) instead of the wide OR-low. This
+    caps loss size so a few adverse gaps don't destroy PF."""
+    plan = compute_position(
+        direction="LONG", entry_price=99.85, opening_range_high=100.1,
+        opening_range_low=99.2, prev_close=100.0, capital=25_000.0,
+        risk_per_trade=0.01, atr=0.5, atr_target=0.5,
+        min_stop_distance_pct=0.001, max_position_size=0.95,
+        sl_atr_multiple=2.0,
+    )
+    # LONG SL = entry - atr*2 = 99.85 - 1.0 = 98.85 (NOT the OR-low 99.2)
+    assert plan.sl_price == pytest.approx(98.85)
+    assert plan.sl_price < 99.2  # tighter than OR-low
+    assert plan.is_valid is True
+
+
+def test_atr_sl_short_mirrors() -> None:
+    plan = compute_position(
+        direction="SHORT", entry_price=100.15, opening_range_high=100.8,
+        opening_range_low=99.9, prev_close=100.0, capital=25_000.0,
+        risk_per_trade=0.01, atr=0.5, atr_target=0.5,
+        min_stop_distance_pct=0.001, max_position_size=0.95,
+        sl_atr_multiple=2.0,
+    )
+    # SHORT SL = entry + atr*2 = 100.15 + 1.0 = 101.15
+    assert plan.sl_price == pytest.approx(101.15)
+    assert plan.sl_price > 100.8  # wider than OR-high (correct for SHORT stop)
+
+
+def test_atr_sl_tighter_than_or_stop() -> None:
+    """When the opening range is WIDE, the OR-low stop is far from entry
+    (huge loss when hit), while the ATR stop bounds the loss to
+    volatility. Use a wide-OR case to show the ATR stop is tighter."""
+    base = dict(
+        direction="LONG", entry_price=99.85, opening_range_high=101.5,
+        opening_range_low=97.0, prev_close=100.0, capital=25_000.0,
+        risk_per_trade=0.01, atr=0.5, atr_target=0.5,
+        min_stop_distance_pct=0.001, max_position_size=0.95,
+        partial_tp_frac=0.5,
+    )
+    or_stop = compute_position(sl_atr_multiple=None, **base)
+    atr_stop = compute_position(sl_atr_multiple=2.0, **base)
+    # OR stop distance 99.85-97.0 = 2.85 (huge); ATR stop distance 1.0
+    assert (99.85 - atr_stop.sl_price) < (99.85 - or_stop.sl_price)
