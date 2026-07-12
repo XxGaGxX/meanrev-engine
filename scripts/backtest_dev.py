@@ -37,7 +37,7 @@ if str(ROOT) not in sys.path:
 from src.config import load_settings
 from src.strategy.signals import generate_entry_signal
 from src.strategy.risk import compute_position, alpaca_round_trip_cost
-from src.strategy.filters import compute_adx, regime_allows_trade
+from src.strategy.filters import compute_adx, regime_allows_trade, compute_ema, ema_filter_allows
 from src.backtest.engine import simulate_trade, TradeResult, ExitReason
 from src.backtest.metrics import compute_metrics
 
@@ -58,9 +58,7 @@ def _load(ticker_path: str) -> pd.DataFrame:
     df["date"] = pd.to_datetime(df["date"]).dt.date
     df = df.sort_values("date").reset_index(drop=True)
     return df[["date", "open", "high", "low", "close"]]
-
-
-def backtest_dev_file(path: str, st, ex, rk) -> list[TradeResult]:
+def backtest_dev_file(path: str, st, ex, rk, fk) -> list[TradeResult]:
     df = _load(path)
     if len(df) < 60:
         return []
@@ -69,6 +67,8 @@ def backtest_dev_file(path: str, st, ex, rk) -> list[TradeResult]:
     dev = df.iloc[:n_dev].reset_index(drop=True)
     if len(dev) < 30:
         return []
+    # 200EMA on daily closes (needs >= ema_period history)
+    ema200 = compute_ema(dev["close"], fk.ema_period) if fk.use_ema_filter else None
 
     trades: list[TradeResult] = []
     # daily ADX for regime filter on this ticker
@@ -78,6 +78,11 @@ def backtest_dev_file(path: str, st, ex, rk) -> list[TradeResult]:
     for i in range(1, len(dev)):
         cur = dev.iloc[i]
         prev_close = float(dev.iloc[i - 1]["close"])
+        # gap-band (tight, from filters config) — skip if outside
+        first_open = float(dev.iloc[i]["open"])
+        gap_pct = (first_open - prev_close) / prev_close
+        if not (fk.gap_min_pct <= abs(gap_pct) <= fk.gap_max_pct):
+            continue
         # one "day" as a single OHLC row -> simulate intraday via the
         # daily bar: entry next day open is not possible intraday, so we
         # model the daily proxy: signal on day i, entry at day i+1 open.
@@ -85,7 +90,7 @@ def backtest_dev_file(path: str, st, ex, rk) -> list[TradeResult]:
         sig = generate_entry_signal(
             dev.iloc[: i + 1],  # prefix up to and including day i
             prev_close=prev_close,
-            gap_min_pct=st.gap_min_pct, gap_max_pct=st.gap_max_pct,
+            gap_min_pct=fk.gap_min_pct, gap_max_pct=fk.gap_max_pct,
             opening_range_bars=1, confirmation_bars=1,
         )
         if sig.action.value == "FLAT" or sig.bar_index is None:
@@ -94,10 +99,19 @@ def backtest_dev_file(path: str, st, ex, rk) -> list[TradeResult]:
         if i + 1 >= len(dev):
             continue
         entry_price = float(dev.iloc[i + 1]["open"])
-        # regime filter on this day's ADX
+        # regime filter: ADX (design §2.4)
         day_adx = adx_by_i.get(i)
-        if day_adx is not None and day_adx > 25.0:
+        if day_adx is not None and day_adx > fk.adx_max:
             continue
+        # 200EMA filter: trade only if gap pulls price away from trend
+        if ema200 is not None and i < fk.ema_period:
+            continue
+        if ema200 is not None:
+            hist = dev.iloc[: i + 1].copy()
+            hist.loc[hist.index[-1], "close"] = entry_price
+            if not ema_filter_allows(hist, direction=sig.action.value,
+                                     ema_period=fk.ema_period):
+                continue
         # synthetic intraday: OR = day i range, target = prev_close
         or_high = float(dev.iloc[i]["high"])
         or_low = float(dev.iloc[i]["low"])
@@ -135,14 +149,16 @@ def main() -> None:
     settings = load_settings()
     st, ex = settings.strategy, settings.execution
     rk = settings.risk
+    fk = settings.filters
     files = _ticker_files()
     print(f"Universe: {len(files)} tickers, DEV set = first {int(DEV_FRAC*100)}%")
     print(f"Risk: SL={rk.sl_atr_multiple}xATR  TP_ext={rk.tp_extend_atr_multiple}xATR  partial={rk.partial_tp_frac}")
+    print(f"Filters: EMA{fk.ema_period}@{fk.use_ema_filter} gap[{fk.gap_min_pct*100:.1f},{fk.gap_max_pct*100:.1f}%] VIX<{fk.vix_max} ADX<{fk.adx_max}")
 
     all_trades: list[TradeResult] = []
     look_ahead_violations = 0
     for f in files:
-        tr = backtest_dev_file(f, st, ex, rk)
+        tr = backtest_dev_file(f, st, ex, rk, fk)
         for t in tr:
             if t.entry_bar_index >= 0 and t.signal_bar_index >= 0:
                 if t.entry_bar_index <= t.signal_bar_index:

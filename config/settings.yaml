@@ -41,6 +41,19 @@ risk:
   partial_tp_frac: 0.5
   time_stop_bars: null             # daily proxy has none; 5min uses 30
 
+# Filters (Phase 3+ / Fase A winrate) — all config-driven, no hardcode.
+# - ema_period: 200EMA; trade only if gap pulls price AWAY from EMA
+#   (mean-reversion only makes sense when price is far from trend).
+# - gap tight band 0.3-0.8%: small gaps revert better than huge gaps.
+# - vix_max: skip high-vol regime (breakout, not mean-reversion).
+filters:
+  ema_period: 200
+  use_ema_filter: false
+  gap_min_pct: 0.003
+  gap_max_pct: 0.008
+  vix_max: 30.0
+  adx_max: 25.0
+
 # Logging minimale (le rotazioni/config arriveranno in fasi successive)
 logging:
   level: "INFO"

@@ -57,6 +57,41 @@ def compute_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
     return adx
 
 
+def ema_filter_allows(
+    df: pd.DataFrame,
+    *,
+    direction: str,
+    ema_period: int = 200,
+    ema_col: str = "close",
+    price_col: str = "close",
+) -> bool:
+    """Mean-reversion only makes sense when price is FAR from the primary
+    trend (the EMA) and the gap pulls it further away.
+
+    Rules:
+      - LONG  (down gap): allow only if last price < EMA  (price below
+        trend, the down-gap is an overshoot that should snap back up).
+      - SHORT (up   gap): allow only if last price > EMA.
+      - Needs >= ema_period bars of history; with less, BLOCK (conservative).
+
+    Uses ONLY the last row (decision timestamp) — no look-ahead.
+    """
+    if direction not in ("LONG", "SHORT"):
+        raise ValueError(f"direction must be LONG/SHORT, got {direction!r}")
+    if len(df) < ema_period:
+        return False
+    if ema_col not in df.columns or price_col not in df.columns:
+        raise ValueError(f"df must have {ema_col!r} and {price_col!r} columns")
+    ema = compute_ema(df[ema_col], ema_period)
+    last_ema = ema.iloc[-1]
+    last_price = float(df[price_col].iloc[-1])
+    if pd.isna(last_ema):
+        return False
+    if direction == "LONG":
+        return last_price < last_ema
+    return last_price > last_ema
+
+
 def regime_allows_trade(
     df: pd.DataFrame,
     *,

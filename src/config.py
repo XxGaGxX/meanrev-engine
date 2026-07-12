@@ -65,6 +65,17 @@ class RiskConfig:
 
 
 @dataclass(frozen=True)
+class FiltersConfig:
+    """Entry filters (Phase 3+ / Fase A winrate lift)."""
+    ema_period: int
+    use_ema_filter: bool
+    gap_min_pct: float
+    gap_max_pct: float
+    vix_max: float
+    adx_max: float
+
+
+@dataclass(frozen=True)
 class GatesConfig:
     """Decision thresholds lifted out of settings.yaml so the rest of the
     code reads typed constants."""
@@ -82,6 +93,7 @@ class Settings:
     execution: ExecutionConfig
     gates: GatesConfig
     risk: RiskConfig
+    filters: FiltersConfig
 
 
 def _coerce_date(value: Any, field: str) -> date:
@@ -111,6 +123,7 @@ def load_settings(path: Path | None = None) -> Settings:
         e = raw["execution"]
         g = raw["gates"]
         r = raw["risk"]
+        f = raw["filters"]
     except KeyError as exc:
         raise KeyError(f"settings.yaml missing required block: {exc}") from exc
 
@@ -152,10 +165,20 @@ def load_settings(path: Path | None = None) -> Settings:
         time_stop_bars=(int(r["time_stop_bars"]) if r.get("time_stop_bars") is not None else None),
     )
 
+    filters_cfg = FiltersConfig(
+        ema_period=int(f["ema_period"]),
+        use_ema_filter=bool(f["use_ema_filter"]),
+        gap_min_pct=float(f["gap_min_pct"]),
+        gap_max_pct=float(f["gap_max_pct"]),
+        vix_max=float(f["vix_max"]),
+        adx_max=float(f["adx_max"]),
+    )
+
     return Settings(
         strategy=strategy_cfg,
         data=data_cfg,
         execution=execution_cfg,
         gates=gates_cfg,
         risk=risk_cfg,
+        filters=filters_cfg,
     )

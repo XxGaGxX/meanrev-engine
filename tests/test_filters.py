@@ -23,6 +23,7 @@ from src.strategy.filters import (
     compute_adx,
     compute_ema,
     regime_allows_trade,
+    ema_filter_allows,
 )
 
 
@@ -101,3 +102,36 @@ def test_regime_blocks_high_vix() -> None:
         df, direction="LONG", adx_max=25, ema_period=20, vix=35.0, vix_max=30,
     )
     assert allowed is False  # VIX > 30 -> no trade
+
+
+def test_ema_filter_allows_long_below_ema() -> None:
+    """LONG (down gap) only allowed when price is BELOW the EMA."""
+    n = 60
+    closes = np.linspace(100, 110, n, dtype=float)
+    df = _ohlc_series(closes + 0.5, closes - 0.5, closes)
+    # price still above EMA -> LONG blocked
+    assert bool(ema_filter_allows(df, direction="LONG", ema_period=20)) is False
+    # pull last price below EMA -> overshoot -> LONG allowed
+    df_below = df.copy()
+    df_below.loc[df_below.index[-1], "close"] = 95.0
+    assert bool(ema_filter_allows(df_below, direction="LONG", ema_period=20)) is True
+
+
+def test_ema_filter_allows_short_above_ema() -> None:
+    n = 60
+    closes = np.linspace(100, 110, n, dtype=float)
+    df = _ohlc_series(closes + 0.5, closes - 0.5, closes)
+    # price above EMA -> SHORT (up-gap overshoot) allowed
+    assert bool(ema_filter_allows(df, direction="SHORT", ema_period=20)) is True
+    # push last price below EMA -> SHORT blocked
+    df_below = df.copy()
+    df_below.loc[df_below.index[-1], "close"] = 95.0
+    assert bool(ema_filter_allows(df_below, direction="SHORT", ema_period=20)) is False
+
+
+def test_ema_filter_blocks_short_history() -> None:
+    n = 10
+    closes = np.linspace(100, 110, n, dtype=float)
+    df = _ohlc_series(closes + 0.5, closes - 0.5, closes)
+    # < ema_period bars -> conservative BLOCK
+    assert bool(ema_filter_allows(df, direction="LONG", ema_period=20)) is False
