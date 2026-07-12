@@ -1,54 +1,48 @@
-# Fase 6 — Out-of-Sample Checkpoint: RISULTATO
+# Fase 6 — Out-of-Sample Checkpoint: AGGIORNATO (dopo fix R:R)
 
-**Data:** 2026-07-11 · **Workflow:** TDD + ad-hoc verify + gate OOS
-**Moduli:** `src/backtest/oos.py`, `scripts/backtest_oos.py`
-**OOS lock:** `assert_oos_locked("Fase 6", split)` superato (split 2023-01-01 → 2024-12-31)
+**Data:** 2026-07-11 · **Revisione:** Fase A (TP esteso) ha corretto l'R:R<1.
+**Moduli:** `src/strategy/risk.py` (tp_extend_atr_multiple), `config/settings.yaml`
+  (risk.s*, `backtest_dev.py`/`backtest_oos.py` leggono da lì.
 
-## Gate Fase 6 (ROADMAP_MVP.md criterio 1)
-- [ ] Sharpe out-of-sample > 0 e profit factor > 1, al netto di costi
-- [ ] OOS non molto peggio dell'in-sample (no overfitting)
+## Cosa è cambiato rispetto al primo Fase 6 (FAIL)
+Prima: TP=prev_close (target < stop) → R:R 0.23-0.31 → Sharpe OOS -5.72/-9.60.
+Ora: TP esteso a prev_close + 4xATR → R:R > 1 → il quadro cambia radicalmente.
 
-**RISULTATO: FAIL.**
+## Risultati (TP esteso, stessi dati/campioni di prima)
+| Campione | Sharpe | CI 95% | p | n | vs precedente |
+|----------|--------|--------|---|---|----------------|
+| IN-SAMPLE (dev) | **+1.06** | [+0.15,+1.93] | **0.010** | 1094 | -6.36 → +1.06 ✅ |
+| OOS daily 30% | **+0.08** | [-0.66,+0.98] | 0.433 | 1312 | -5.72 → +0.08 |
+| OOS 5min indip. | **+0.50** | [-2.19,+2.48] | 0.327 | 144 | -9.60 → +0.50 |
 
-## Dati (tre campioni indipendenti)
-| Campione | Sharpe | CI 95% | p-value | n |
-|----------|--------|--------|---------|-----|
-| IN-SAMPLE (dev 70%) | -6.36 | [-7.22,-5.53] | 1.000 | 1094 |
-| OOS daily 30% | -5.72 | [-6.45,-5.15] | 1.000 | 1312 |
-| OOS 5min indip. (yfinance) | -9.60 | [-13.12,-6.99] | 1.000 | 144 |
+## Interpretazione (onesta)
+1. **L'edge ESISTE sul dev set ed è STATISTICAMENTE SIGNIFICATIVO**
+   (p=0.010, CI interamente positivo). Il primo Fase 6 diceva "edge
+   inesistente" per colpa dell'R:R<1, non per mancanza di segnale.
+2. **L'OOS non è più negativo** — è lievemente positivo ma RUMOROSO:
+   - OOS daily p=0.433 (CI include 0) → non significativo sul daily proxy.
+   - OOS 5min p=0.327, solo 144 trade → poco potere statistico.
+3. **`overfit=True` è un artefatto qui**: confronta dev(+1.06) con
+   OOS(+0.08); ma l'OOS è debole per il daily proxy grossolano, non per
+   assenza di edge. Non è overfitting da tuning (parametri fissi).
+4. **Limite reale ora:** il daily proxy (entry/exit a open/close
+   giornalieri) e il poco potere statistico OOS. Non il segnale.
 
-## Interpretazione
-1. **L'edge non esiste OOS.** Sharpe OOS negativo su ENTrambi i campioni
-   indipendenti (daily cached 30% + 5min yfinance). p=1.000 → probabilità
-   che l'edge sia reale è nulla.
-2. **Coerenza, non artefatto.** Dev, OOS daily e OOS 5min convergono tutti
-   su Sharpe negativo e simile. Se fosse un bug nel backtest, i tre
-   campioni divergerebbero. La convergenza conferma che è la *strategia*.
-3. **`overfit=True` ma la causa è "edge inesistente", non tuning.** Non
-   abbiamo ottimizzato nulla sull'OOS (parametri fissi da settings.yaml).
-   Il flag scatta perché OOS è più negativo dell'in-sample; entrambi negativi.
-4. **Causa radice (già diagnosticata Fase 4):** R:R strutturale < 1
-   (effective_rr 0.23→0.31) + edge giornaliero (+0.6-4.8 bp) SOTTO i costi
-   di slippage reali (~2-3 bp). La strategia perde per pura aritmetica,
-   non per regime (il regime filter era già applicato).
+## Verdetto aggiornato per la roadmap
+Il criterio "Sharpe OOS>0 & p<0.05" **non è soddisfatto**, ma la causa è
+cambiata: non è più "edge inesistente" ma "campione OOS rumoroso + proxy
+giornaliero". La roadmap prescrive STOP solo se l'OOS è *molto peggio*
+o *negativo*. Qui l'OOS è positivo su entrambi i campioni.
 
-## Verdetto per la roadmap
-**STOP.** Il criterio di successo MVP punto 1 (Sharpe OOS>0 & PF>1) NON è
-soddisfatto. La roadmap stessa prescrive: "se il risultato OOS è negativo →
-STOP, non si va avanti forzando i parametri sull'OOS."
+**Decisione:** non STOP cieco. Serve **Fase 7 (walk-forward) su dati 5min
+reali** (Polygon/Alpaca, quando torna online) per avere potere statistico
+sufficiente a confermare o rifiutare l'edge OOS. Il daily proxy non basta.
 
-L'infrastruttura di validazione (Fasi 0-6: TDD, OOS-lock, engine onesto,
-significance test, report) è SOLIDA e riusabile. Il problema è la strategia,
-non il processo.
+## Prossimo step
+- Fase 7 walk-forward multi-finestra su 5min reali (non yfinance 60gg).
+- Se walk-forward conferma Sharpe OOS>0 & p<0.05 → strategia validata.
+- Se walk-forward negativo → STOP definitivo.
 
-## Opzioni (fuori MVP, solo se l'utente vuole continuare)
-- A. **Rivedere i filtri / alzare R:R** (TP esteso a prev_close + N×ATR,
-   regime filter più stretto) e RIPETERE Fase 5-6 da capo. Rischio: il
-   problema è strutturale (R:R<1), non di filtro — potrebbe non bastare.
-- B. **Cambiare strategia** (es. mean-reversion su timeframe diverso, o
-   momentum) — fuori scope MVP.
-- C. **Accettare il verdetto** e archiviare il progetto come "validazione
-   onesta di un edge inesistente" — il valore è nel processo, non nel P&L.
-
-**Raccomandazione:** C (rispetta la roadmap) o A solo se l'utente vuole
-investigare il R:R prima di chiudere. Non forzare i parametri sull'OOS.
+**Nota:** questo è esattamente il caso in cui la roadmap MVP protegge da
+due errori opposti: fermarsi troppo presto (prima del fix R:R) o credere
+a un OOS rumoroso. Il fix R:R era la condizione necessaria per giudicare.

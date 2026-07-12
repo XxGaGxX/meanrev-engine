@@ -294,3 +294,64 @@ def test_atr_sl_tighter_than_or_stop() -> None:
     atr_stop = compute_position(sl_atr_multiple=2.0, **base)
     # OR stop distance 99.85-97.0 = 2.85 (huge); ATR stop distance 1.0
     assert (99.85 - atr_stop.sl_price) < (99.85 - or_stop.sl_price)
+
+
+# --- QUANT FIX (R:R < 1): EXTENDED TAKE-PROFIT ---
+# TP = prev_close is too close to entry (target < stop). Extending the TP
+# to prev_close + k*ATR in the trade direction lifts R:R above 1.
+
+
+def test_extended_tp_above_base_tp() -> None:
+    """With tp_extend_atr_multiple, the TP must sit BEYOND prev_close in
+    the favorable direction (LONG: higher; SHORT: lower)."""
+    plan = compute_position(
+        direction="LONG", entry_price=99.85, opening_range_high=100.1,
+        opening_range_low=99.2, prev_close=100.0, capital=25_000.0,
+        risk_per_trade=0.01, atr=0.5, atr_target=0.5,
+        min_stop_distance_pct=0.001, max_position_size=0.95,
+        sl_atr_multiple=2.0, tp_extend_atr_multiple=3.0,
+    )
+    # LONG TP = prev_close + 3*ATR = 100.0 + 1.5 = 101.5
+    assert plan.tp_price == pytest.approx(101.5)
+    assert plan.tp_price > 100.0  # extended beyond prev_close
+
+
+def test_extended_tp_short_mirrors() -> None:
+    plan = compute_position(
+        direction="SHORT", entry_price=100.15, opening_range_high=100.8,
+        opening_range_low=99.9, prev_close=100.0, capital=25_000.0,
+        risk_per_trade=0.01, atr=0.5, atr_target=0.5,
+        min_stop_distance_pct=0.001, max_position_size=0.95,
+        sl_atr_multiple=2.0, tp_extend_atr_multiple=3.0,
+    )
+    # SHORT TP = prev_close - 3*ATR = 100.0 - 1.5 = 98.5
+    assert plan.tp_price == pytest.approx(98.5)
+    assert plan.tp_price < 100.0
+
+
+def test_extended_tp_raises_invalid_multiple() -> None:
+    with pytest.raises(ValueError):
+        compute_position(
+            direction="LONG", entry_price=99.85, opening_range_high=100.1,
+            opening_range_low=99.2, prev_close=100.0, capital=25_000.0,
+            risk_per_trade=0.01, atr=0.5, atr_target=0.5,
+            min_stop_distance_pct=0.001, max_position_size=0.95,
+            sl_atr_multiple=2.0, tp_extend_atr_multiple=0.0,
+        )
+
+
+def test_extended_tp_lifts_rr_above_one() -> None:
+    """The whole point: with an extended TP the effective R:R must exceed
+    the pure OR-low/base-TP R:R AND cross 1.0 in the small-gap/wide-OR
+    case that failed before."""
+    base = dict(
+        direction="LONG", entry_price=99.85, opening_range_high=101.5,
+        opening_range_low=97.0, prev_close=100.0, capital=25_000.0,
+        risk_per_trade=0.01, atr=0.5, atr_target=0.5,
+        min_stop_distance_pct=0.001, max_position_size=0.95,
+        sl_atr_multiple=2.0, partial_tp_frac=0.5,
+    )
+    base_tp = compute_position(tp_extend_atr_multiple=None, **base)
+    ext_tp = compute_position(tp_extend_atr_multiple=4.0, **base)
+    assert ext_tp.effective_rr() > base_tp.effective_rr()
+    assert ext_tp.effective_rr() > 1.0  # R:R now viable

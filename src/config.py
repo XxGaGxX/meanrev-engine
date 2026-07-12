@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import yaml
 
@@ -56,6 +56,15 @@ class ExecutionConfig:
 
 
 @dataclass(frozen=True)
+class RiskConfig:
+    """Position sizing / exit parameters (Phase 4 + Fase A quant fix)."""
+    sl_atr_multiple: float
+    tp_extend_atr_multiple: float
+    partial_tp_frac: float
+    time_stop_bars: Optional[int]
+
+
+@dataclass(frozen=True)
 class GatesConfig:
     """Decision thresholds lifted out of settings.yaml so the rest of the
     code reads typed constants."""
@@ -72,6 +81,7 @@ class Settings:
     data: DataConfig
     execution: ExecutionConfig
     gates: GatesConfig
+    risk: RiskConfig
 
 
 def _coerce_date(value: Any, field: str) -> date:
@@ -100,6 +110,7 @@ def load_settings(path: Path | None = None) -> Settings:
         d = raw["data"]
         e = raw["execution"]
         g = raw["gates"]
+        r = raw["risk"]
     except KeyError as exc:
         raise KeyError(f"settings.yaml missing required block: {exc}") from exc
 
@@ -134,9 +145,17 @@ def load_settings(path: Path | None = None) -> Settings:
         paper_trading_min_days=int(g["paper_trading_min_days"]),
     )
 
+    risk_cfg = RiskConfig(
+        sl_atr_multiple=float(r["sl_atr_multiple"]),
+        tp_extend_atr_multiple=float(r["tp_extend_atr_multiple"]),
+        partial_tp_frac=float(r["partial_tp_frac"]),
+        time_stop_bars=(int(r["time_stop_bars"]) if r.get("time_stop_bars") is not None else None),
+    )
+
     return Settings(
         strategy=strategy_cfg,
         data=data_cfg,
         execution=execution_cfg,
         gates=gates_cfg,
+        risk=risk_cfg,
     )

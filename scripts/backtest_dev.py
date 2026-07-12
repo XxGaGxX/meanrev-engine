@@ -60,7 +60,7 @@ def _load(ticker_path: str) -> pd.DataFrame:
     return df[["date", "open", "high", "low", "close"]]
 
 
-def backtest_dev_file(path: str, st, ex) -> list[TradeResult]:
+def backtest_dev_file(path: str, st, ex, rk) -> list[TradeResult]:
     df = _load(path)
     if len(df) < 60:
         return []
@@ -113,8 +113,9 @@ def backtest_dev_file(path: str, st, ex) -> list[TradeResult]:
             risk_per_trade=ex.risk_per_trade,
             atr=atr_val, atr_target=0.5,
             min_stop_distance_pct=0.001, max_position_size=0.95,
-            partial_tp_frac=0.5, time_stop_bars=None,
-            sl_atr_multiple=2.0,
+            partial_tp_frac=rk.partial_tp_frac, time_stop_bars=rk.time_stop_bars,
+            sl_atr_multiple=rk.sl_atr_multiple,
+            tp_extend_atr_multiple=rk.tp_extend_atr_multiple,
         )
         # exit at next day close (daily proxy). prefix check: entry after signal.
         exit_close = float(dev.iloc[i + 1]["close"])
@@ -133,13 +134,15 @@ def backtest_dev_file(path: str, st, ex) -> list[TradeResult]:
 def main() -> None:
     settings = load_settings()
     st, ex = settings.strategy, settings.execution
+    rk = settings.risk
     files = _ticker_files()
     print(f"Universe: {len(files)} tickers, DEV set = first {int(DEV_FRAC*100)}%")
+    print(f"Risk: SL={rk.sl_atr_multiple}xATR  TP_ext={rk.tp_extend_atr_multiple}xATR  partial={rk.partial_tp_frac}")
 
     all_trades: list[TradeResult] = []
     look_ahead_violations = 0
     for f in files:
-        tr = backtest_dev_file(f, st, ex)
+        tr = backtest_dev_file(f, st, ex, rk)
         for t in tr:
             if t.entry_bar_index >= 0 and t.signal_bar_index >= 0:
                 if t.entry_bar_index <= t.signal_bar_index:

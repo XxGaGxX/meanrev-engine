@@ -62,7 +62,7 @@ def _ticker_files():
     return [f for f in fs if not os.path.basename(f).startswith("_")]
 
 
-def backtest_oos_daily_file(path: str, st, ex, split) -> list[TradeResult]:
+def backtest_oos_daily_file(path: str, st, ex, split, rk) -> list[TradeResult]:
     """Backtest ONLY the OOS window of one cached daily file."""
     df = _load(path)
     if len(df) < 60:
@@ -96,7 +96,9 @@ def backtest_oos_daily_file(path: str, st, ex, split) -> list[TradeResult]:
             prev_close=prev_close, capital=ex.initial_capital,
             risk_per_trade=ex.risk_per_trade, atr=atr_val, atr_target=0.5,
             min_stop_distance_pct=0.001, max_position_size=0.95,
-            partial_tp_frac=0.5, time_stop_bars=None, sl_atr_multiple=2.0,
+            partial_tp_frac=rk.partial_tp_frac, time_stop_bars=rk.time_stop_bars,
+            sl_atr_multiple=rk.sl_atr_multiple,
+            tp_extend_atr_multiple=rk.tp_extend_atr_multiple,
         )
         exit_close = float(oos.iloc[i + 1]["close"])
         res = simulate_trade(plan, pd.DataFrame({"close": [exit_close]}),
@@ -108,7 +110,7 @@ def backtest_oos_daily_file(path: str, st, ex, split) -> list[TradeResult]:
     return trades
 
 
-def backtest_oos_5min(ticker: str, st, ex, days: int = 59) -> list[TradeResult]:
+def backtest_oos_5min(ticker: str, st, ex, rk, days: int = 59) -> list[TradeResult]:
     """Independent OOS sample: 5-min bars from yfinance (different period)."""
     df = yf.download(ticker, period=f"{days}d", interval="5m",
                     progress=False, auto_adjust=False)
@@ -169,7 +171,9 @@ def backtest_oos_5min(ticker: str, st, ex, days: int = 59) -> list[TradeResult]:
             prev_close=prev_close, capital=ex.initial_capital,
             risk_per_trade=ex.risk_per_trade, atr=atr_val, atr_target=0.5,
             min_stop_distance_pct=0.001, max_position_size=0.95,
-            partial_tp_frac=0.5, time_stop_bars=30, sl_atr_multiple=2.0,
+            partial_tp_frac=rk.partial_tp_frac, time_stop_bars=rk.time_stop_bars or 30,
+            sl_atr_multiple=rk.sl_atr_multiple,
+            tp_extend_atr_multiple=rk.tp_extend_atr_multiple,
         )
         after = g.iloc[ei + 1:].reset_index(drop=True)
         if len(after) == 0:
@@ -186,27 +190,29 @@ def main() -> None:
     from scripts.backtest_dev import backtest_dev_file  # reuse dev backtest
     settings = load_settings()
     st, ex = settings.strategy, settings.execution
+    rk = settings.risk
     split = compute_split(settings.data)
     # ENFORCE OOS lock: fails if run before Fase 6
     assert_oos_locked("Fase 6", split)
     print(f"OOS window: {split.oos_start} -> {split.oos_end}")
+    print(f"Risk: SL={rk.sl_atr_multiple}xATR  TP_ext={rk.tp_extend_atr_multiple}xATR  partial={rk.partial_tp_frac}")
 
     # --- DEV (in-sample) for comparison ---
     dev_trades: list[TradeResult] = []
     for f in _ticker_files():
-        dev_trades.extend(backtest_dev_file(f, st, ex))
+        dev_trades.extend(backtest_dev_file(f, st, ex, rk))
     dev_sig = significance(dev_trades, n_bootstrap=300, seed=11)
 
     # --- OOS (A) daily cached 30% ---
     oos_daily: list[TradeResult] = []
     for f in _ticker_files():
-        oos_daily.extend(backtest_oos_daily_file(f, st, ex, split))
+        oos_daily.extend(backtest_oos_daily_file(f, st, ex, split, rk))
     oos_daily_sig = significance(oos_daily, n_bootstrap=300, seed=12)
 
     # --- OOS (B) 5-min yfinance independent sample ---
     oos_5min: list[TradeResult] = []
     for t in ["AAPL", "MSFT", "NVDA", "AMD", "TSLA", "AMZN", "META", "GOOGL"]:
-        oos_5min.extend(backtest_oos_5min(t, st, ex, days=59))
+        oos_5min.extend(backtest_oos_5min(t, st, ex, rk, days=59))
     oos_5min_sig = significance(oos_5min, n_bootstrap=300, seed=13)
 
     print("\n=== PHASE 6 OOS CHECKPOINT ===")

@@ -153,6 +153,7 @@ def compute_position(
     partial_tp_frac: float = 0.0,
     time_stop_bars: Optional[int] = None,
     sl_atr_multiple: Optional[float] = None,
+    tp_extend_atr_multiple: Optional[float] = None,
 ) -> PositionPlan:
     """Build a risk-bounded PositionPlan.
 
@@ -165,13 +166,19 @@ def compute_position(
             INSTEAD of the (often wide) opening-range boundary. This caps
             loss size so a few adverse gaps cannot produce outsized
             losses that destroy profit factor. Recommended for live use.
+        tp_extend_atr_multiple: if given, the TP is extended from the
+            (too-close) prev_close to prev_close +/- mult*ATR in the
+            trade direction. This is the SECOND lever (after ATR SL) to
+            lift the structural R:R above 1 — without it the target is
+            smaller than the stop and the strategy bleeds (Fase 4/6).
 
     Returns:
         PositionPlan with integer share count.
 
     Raises:
         ValueError: bad direction, non-positive capital/entry,
-            partial_tp_frac outside [0,1], or sl_atr_multiple <= 0.
+            partial_tp_frac outside [0,1], sl_atr_multiple <= 0, or
+            tp_extend_atr_multiple <= 0.
     """
     if direction not in ("LONG", "SHORT"):
         raise ValueError(f"direction must be LONG/SHORT, got {direction!r}")
@@ -185,6 +192,10 @@ def compute_position(
         raise ValueError(f"time_stop_bars must be positive, got {time_stop_bars!r}")
     if sl_atr_multiple is not None and sl_atr_multiple <= 0:
         raise ValueError(f"sl_atr_multiple must be positive, got {sl_atr_multiple!r}")
+    if tp_extend_atr_multiple is not None and tp_extend_atr_multiple <= 0:
+        raise ValueError(
+            f"tp_extend_atr_multiple must be positive, got {tp_extend_atr_multiple!r}"
+        )
 
     is_long = direction == "LONG"
     dir_enum = Direction.LONG if is_long else Direction.SHORT
@@ -198,6 +209,11 @@ def compute_position(
     else:
         sl_price = opening_range_low if is_long else opening_range_high
     tp_price = prev_close
+    # QUANT FIX (R:R<1): extend TP beyond prev_close by k*ATR in the
+    # favorable direction so the target is larger than the ATR stop.
+    if tp_extend_atr_multiple is not None and atr > 0:
+        tp_ext = tp_extend_atr_multiple * atr
+        tp_price = (prev_close + tp_ext) if is_long else (prev_close - tp_ext)
     # OR boundary used for the partial take-profit. Always populated so the
     # backtest / report can reason about it; whether it is USED is governed
     # by partial_tp_frac (0 = disabled, but the price is still known).

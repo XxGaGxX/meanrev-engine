@@ -29,6 +29,18 @@ execution:
   risk_per_trade: 0.01              # 1% del capitale a rischio
   initial_capital: 25000
 
+# Risk & Position sizing (Phase 4 + Fase A quant fix)
+# - sl_atr_multiple: SL volatility-scaled (entry - mult*ATR) instead of
+#   wide OR-low. Caps loss size.
+# - tp_extend_atr_multiple: TP extended to prev_close +/- mult*ATR in the
+#   trade direction, lifting structural R:R above 1 (prev_close alone is
+#   smaller than the ATR stop -> R:R<1 -> strategy bled in Fase 4/6).
+risk:
+  sl_atr_multiple: 2.0
+  tp_extend_atr_multiple: 4.0
+  partial_tp_frac: 0.5
+  time_stop_bars: null             # daily proxy has none; 5min uses 30
+
 # Logging minimale (le rotazioni/config arriveranno in fasi successive)
 logging:
   level: "INFO"

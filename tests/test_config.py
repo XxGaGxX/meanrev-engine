@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from src.config import load_settings, Settings, DataConfig, StrategyConfig
+from src.config import load_settings, Settings, DataConfig, StrategyConfig, RiskConfig
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -31,6 +31,16 @@ def test_settings_has_data_and_strategy_blocks() -> None:
     settings = load_settings(SETTINGS_PATH)
     assert isinstance(settings.data, DataConfig)
     assert isinstance(settings.strategy, StrategyConfig)
+
+
+def test_settings_has_risk_block() -> None:
+    """Fase A: the risk block (sl/tp extend multiples) must load typed."""
+    settings = load_settings(SETTINGS_PATH)
+    assert isinstance(settings.risk, RiskConfig)
+    assert settings.risk.sl_atr_multiple == 2.0
+    assert settings.risk.tp_extend_atr_multiple == 4.0
+    assert settings.risk.partial_tp_frac == 0.5
+    assert settings.risk.time_stop_bars is None
 
 
 def test_data_config_window_matches_roadmap() -> None:
